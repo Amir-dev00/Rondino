@@ -15,7 +15,8 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # First FTPS upload of vendor/ is many small files; allow a long window.
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
@@ -81,33 +82,50 @@ jobs:
           test ! -d tests
           test ! -d release
 
-      - name: Deploy via explicit FTPS
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
-        with:
-          server: ${{ secrets.FTP_SERVER }}
-          username: ${{ secrets.FTP_USERNAME }}
-          password: ${{ secrets.FTP_PASSWORD }}
-          protocol: ftps
-          port: 21
-          local-dir: ./deploy-staging/
-          server-dir: ./
-          dry-run: false
-          dangerous-clean-slate: false
-          log-level: standard
-          timeout: 600000
-          exclude: |
-            **/.git*
-            **/.git*/**
-            **/.github/**
-            **/.env
-            **/.env.*
-            **/node_modules/**
-            **/tests/**
-            **/release/**
-            **/*.sqlite
-            **/*.sql
-            storage/**
-            bootstrap/cache/*.php
-            public/storage/**
-            public/uploads/**
-            **/.ftp-deploy-sync-state.json
+      # SamKirkland single-thread FTPS timed out at 45m on vendor/.
+      # lftp mirror with parallel transfers is much faster for many small files.
+      - name: Deploy via explicit FTPS (lftp)
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq lftp
+          test -d deploy-staging
+          lftp -c "
+            set cmd:fail-exit yes
+            set net:timeout 90
+            set net:max-retries 8
+            set net:reconnect-interval-base 5
+            set ftp:ssl-force true
+            set ftp:ssl-protect-data true
+            set ftp:passive-mode true
+            set ssl:verify-certificate no
+            set mirror:parallel-transfer-count 8
+            open -p 21 ftps://${FTP_SERVER}
+            user \"${FTP_USERNAME}\" \"${FTP_PASSWORD}\"
+            lcd deploy-staging
+            mirror -R --parallel=8 --verbose \
+              --exclude-glob .git \
+              --exclude-glob .git/** \
+              --exclude-glob .github \
+              --exclude-glob .github/** \
+              --exclude-glob .env \
+              --exclude-glob .env.* \
+              --exclude-glob node_modules \
+              --exclude-glob node_modules/** \
+              --exclude-glob tests \
+              --exclude-glob tests/** \
+              --exclude-glob release \
+              --exclude-glob release/** \
+              --exclude-glob '*.sqlite' \
+              --exclude-glob '*.sql' \
+              --exclude-glob storage/** \
+              --exclude-glob bootstrap/cache/*.php \
+              --exclude-glob public/storage/** \
+              --exclude-glob public/uploads/** \
+              ./ ./
+            bye
+          "
