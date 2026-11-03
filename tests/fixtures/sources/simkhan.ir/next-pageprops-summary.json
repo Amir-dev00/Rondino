@@ -1,0 +1,20 @@
+{
+  "summary": {
+    "page": "/[areaCode]",
+    "buildId": "9mePW9CACRlDjRO59IJ5n",
+    "top_pageProps_keys": [
+      "dehydratedState"
+    ]
+  },
+  "lists": [
+    [
+      "/dehydratedState/queries",
+      3,
+      [
+        "state",
+        "queryKey",
+        "queryHash"
+      ]
+    ]
+  ]
+}

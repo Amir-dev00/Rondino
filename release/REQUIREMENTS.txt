@@ -1,0 +1,4 @@
+PHP: 8.2–8.4 (8.5 OK in dev)
+Extensions: bcmath ctype curl dom fileinfo json mbstring openssl pdo pdo_mysql tokenizer xml
+DB: MySQL 5.7+ / MariaDB 10.3+ utf8mb4
+No Node/Redis/Docker/queue worker required
