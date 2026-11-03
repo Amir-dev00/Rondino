@@ -91,7 +91,7 @@ jobs:
           port: 21
           local-dir: ./deploy-staging/
           server-dir: ./
-          dry-run: true
+          dry-run: false
           dangerous-clean-slate: false
           log-level: standard
           timeout: 600000
