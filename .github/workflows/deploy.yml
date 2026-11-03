@@ -1,0 +1,143 @@
+# Deploy Rondino to cPanel over explicit FTPS (no SSH/Terminal).
+# FTP jail root = /home/USERNAME/rondino  →  remote path /
+# Subdomain document root = /home/USERNAME/rondino/public
+#
+# Required GitHub secrets: FTP_SERVER, FTP_USERNAME, FTP_PASSWORD
+# Explicit FTPS control port: 21 (change only if your host documents otherwise)
+#
+# After reviewing the first dry-run logs, flip dry-run to false on the line marked below.
+
+name: Deploy to cPanel (FTPS)
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: production-cpanel-ftps
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test-build-deploy:
+    name: Test, stage, FTPS deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP 8.3
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: bcmath, ctype, curl, dom, fileinfo, json, mbstring, openssl, pdo, pdo_mysql, pdo_sqlite, tokenizer, xml
+          coverage: none
+          tools: composer:v2
+
+      - name: Cache Composer
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: composer-${{ runner.os }}-${{ hashFiles('composer.lock') }}
+          restore-keys: |
+            composer-${{ runner.os }}-
+
+      - name: Install Composer dependencies (with dev for tests)
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Prepare test environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate --force
+          mkdir -p database
+          touch database/database.sqlite
+
+      - name: Run automated tests
+        run: php vendor/bin/phpunit --testdox
+        env:
+          APP_ENV: testing
+          DB_CONNECTION: sqlite
+          DB_DATABASE: ${{ github.workspace }}/database/database.sqlite
+          CACHE_STORE: array
+          SESSION_DRIVER: array
+          QUEUE_CONNECTION: sync
+
+      - name: Setup Node (Vite available in package.json)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install npm dependencies and build frontend assets
+        run: |
+          npm ci
+          npm run build
+          # Runtime UI currently loads public/css/app.css; keep Vite build if present.
+          if [ -d public/build ]; then
+            ls -la public/build
+            test -f public/build/manifest.json -o -f public/build/.vite/manifest.json
+          fi
+          test -f public/css/app.css
+
+      - name: Stage production application (includes vendor/)
+        run: |
+          chmod +x scripts/stage-cpanel-deploy.sh
+          ./scripts/stage-cpanel-deploy.sh "${GITHUB_WORKSPACE}/deploy-staging"
+
+      - name: Verify staged deployable paths
+        run: |
+          set -euo pipefail
+          STAGE="${GITHUB_WORKSPACE}/deploy-staging"
+          test -f "${STAGE}/artisan"
+          test -f "${STAGE}/vendor/autoload.php"
+          test -f "${STAGE}/public/index.php"
+          test -f "${STAGE}/public/.htaccess"
+          test -f "${STAGE}/public/css/app.css"
+          test ! -f "${STAGE}/.env"
+          test ! -f "${STAGE}/database/database.sqlite"
+          test ! -d "${STAGE}/tests"
+          test ! -d "${STAGE}/release"
+          echo "Staging verification OK"
+          du -sh "${STAGE}" "${STAGE}/vendor"
+
+      - name: Deploy via explicit FTPS
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          port: 21
+          local-dir: ./deploy-staging/
+          server-dir: ./
+          # >>> AFTER reviewing the first Actions dry-run log, change the next line to: dry-run: false
+          dry-run: true
+          dangerous-clean-slate: false
+          log-level: standard
+          timeout: 600000
+          exclude: |
+            **/.env
+            **/.env.*
+            !**/.env.example
+            **/.git*
+            **/.git*/**
+            **/node_modules/**
+            **/tests/**
+            **/release/**
+            **/*.sqlite
+            **/*.sql
+            **/storage/logs/**
+            !**/storage/logs/.gitignore
+            **/storage/framework/cache/data/**
+            !**/storage/framework/cache/data/.gitignore
+            **/storage/framework/sessions/**
+            !**/storage/framework/sessions/.gitignore
+            **/storage/framework/views/**
+            !**/storage/framework/views/.gitignore
+            **/storage/pail/**
+            **/bootstrap/cache/*.php
+            **/.ftp-deploy-sync-state.json
