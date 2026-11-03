@@ -66,22 +66,26 @@ jobs:
           SESSION_DRIVER: array
           QUEUE_CONNECTION: sync
 
-      - name: Setup Node (Vite available in package.json)
+      # Runtime UI ships public/css/app.css (no Vite required). Build only when a lockfile exists.
+      - name: Setup Node (optional Vite build)
+        if: hashFiles('package-lock.json') != ''
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: npm
 
       - name: Install npm dependencies and build frontend assets
+        if: hashFiles('package-lock.json') != ''
         run: |
           npm ci
           npm run build
-          # Runtime UI currently loads public/css/app.css; keep Vite build if present.
           if [ -d public/build ]; then
             ls -la public/build
             test -f public/build/manifest.json -o -f public/build/.vite/manifest.json
           fi
-          test -f public/css/app.css
+
+      - name: Verify shipped CSS
+        run: test -f public/css/app.css
 
       - name: Stage production application (includes vendor/)
         run: |
