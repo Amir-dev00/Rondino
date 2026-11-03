@@ -130,3 +130,7 @@ php artisan rondino:create-admin {email} --name=مدیر --password-file=/absolu
 - [ ] ورود با حساب مدیر کار می‌کند
 - [ ] کرون `crawl:scheduled` فعال است
 - [ ] فایل رمز ادمین و کرون یک‌باره حذف شده‌اند
+
+## Deploy بعدی با Git
+
+پس از نصب اولیه، به‌روزرسانی فایل‌ها می‌تواند با GitHub Actions روی FTPS انجام شود (`docs/DEPLOY-CPANEL-FTPS.md`). Import مجدد `rondino-install.sql` با هر push انجام **نمی‌شود**. اگر migration جدید آمد، جداگانه در phpMyAdmin/فرآیند کنترل‌شده اعمال کنید.

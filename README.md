@@ -59,6 +59,10 @@ php artisan sources:audit
 php artisan crawl:due --force
 ```
 
+## Deploy خودکار با GitHub Actions (FTPS)
+
+برای هاست بدون SSH: [docs/DEPLOY-CPANEL-FTPS.md](docs/DEPLOY-CPANEL-FTPS.md) — workflow در `.github/workflows/deploy.yml` با **explicit FTPS روی پورت ۲۱**، ابتدا `dry-run: true`.
+
 ## مسیر ۲ — cPanel بدون Terminal / SSH / Composer
 
 راهنمای کامل فارسی: [`docs/INSTALL-NO-TERMINAL-FA.md`](docs/INSTALL-NO-TERMINAL-FA.md)

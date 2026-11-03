@@ -11,6 +11,7 @@
 .env.production
 /release/stage
 /release/*.zip
+/deploy-staging/
 /database/*.sqlite
 /storage/app/source-audit/*.html
 /storage/app/source-audit/live/
