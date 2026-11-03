@@ -82,8 +82,8 @@ jobs:
           test ! -d tests
           test ! -d release
 
-      # SamKirkland single-thread FTPS timed out at 45m on vendor/.
-      # lftp mirror with parallel transfers is much faster for many small files.
+      # Explicit FTPS = ftp:// + ssl-force on port 21 (NOT ftps:// implicit/990).
+      # Parallel lftp is used because single-thread FTP timed out at 45m on vendor/.
       - name: Deploy via explicit FTPS (lftp)
         env:
           FTP_SERVER: ${{ secrets.FTP_SERVER }}
@@ -94,38 +94,39 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq lftp
           test -d deploy-staging
-          lftp -c "
-            set cmd:fail-exit yes
-            set net:timeout 90
-            set net:max-retries 8
-            set net:reconnect-interval-base 5
-            set ftp:ssl-force true
-            set ftp:ssl-protect-data true
-            set ftp:passive-mode true
-            set ssl:verify-certificate no
-            set mirror:parallel-transfer-count 8
-            open -p 21 ftps://${FTP_SERVER}
-            user \"${FTP_USERNAME}\" \"${FTP_PASSWORD}\"
-            lcd deploy-staging
-            mirror -R --parallel=8 --verbose \
-              --exclude-glob .git \
-              --exclude-glob .git/** \
-              --exclude-glob .github \
-              --exclude-glob .github/** \
-              --exclude-glob .env \
-              --exclude-glob .env.* \
-              --exclude-glob node_modules \
-              --exclude-glob node_modules/** \
-              --exclude-glob tests \
-              --exclude-glob tests/** \
-              --exclude-glob release \
-              --exclude-glob release/** \
-              --exclude-glob '*.sqlite' \
-              --exclude-glob '*.sql' \
-              --exclude-glob storage/** \
-              --exclude-glob bootstrap/cache/*.php \
-              --exclude-glob public/storage/** \
-              --exclude-glob public/uploads/** \
-              ./ ./
-            bye
-          "
+          # Heredoc keeps special characters in FTP_PASSWORD intact.
+          lftp <<EOF
+          set cmd:fail-exit yes
+          set net:timeout 90
+          set net:max-retries 8
+          set net:reconnect-interval-base 5
+          set ftp:ssl-force true
+          set ftp:ssl-protect-data true
+          set ftp:passive-mode true
+          set ssl:verify-certificate no
+          set mirror:parallel-transfer-count 8
+          open -p 21 ftp://${FTP_SERVER}
+          user "${FTP_USERNAME}" "${FTP_PASSWORD}"
+          lcd deploy-staging
+          mirror -R --parallel=8 --verbose \
+            --exclude-glob .git \
+            --exclude-glob .git/** \
+            --exclude-glob .github \
+            --exclude-glob .github/** \
+            --exclude-glob .env \
+            --exclude-glob .env.* \
+            --exclude-glob node_modules \
+            --exclude-glob node_modules/** \
+            --exclude-glob tests \
+            --exclude-glob tests/** \
+            --exclude-glob release \
+            --exclude-glob release/** \
+            --exclude-glob '*.sqlite' \
+            --exclude-glob '*.sql' \
+            --exclude-glob storage/** \
+            --exclude-glob bootstrap/cache/*.php \
+            --exclude-glob public/storage/** \
+            --exclude-glob public/uploads/** \
+            ./ ./
+          bye
+          EOF
