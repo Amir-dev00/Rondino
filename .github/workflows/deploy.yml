@@ -1,4 +1,87 @@
-      - name: Deploy Rondino to cPanel via explicit FTPS
+name: Deploy Rondino to cPanel
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-cpanel-ftps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: bcmath, ctype, curl, dom, fileinfo, mbstring, openssl, pdo_mysql, pdo_sqlite, tokenizer, xml
+          coverage: none
+          tools: composer:v2
+
+      - name: Install dependencies for tests
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Prepare test environment
+        run: |
+          cp .env.example .env
+          php artisan key:generate --force
+          mkdir -p database
+          touch database/database.sqlite
+
+      - name: Run tests
+        run: php vendor/bin/phpunit --testdox
+        env:
+          APP_ENV: testing
+          DB_CONNECTION: sqlite
+          DB_DATABASE: ${{ github.workspace }}/database/database.sqlite
+          CACHE_STORE: array
+          SESSION_DRIVER: array
+          QUEUE_CONNECTION: sync
+
+      - name: Set up Node for frontend build
+        if: hashFiles('package-lock.json') != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Build frontend assets
+        if: hashFiles('package-lock.json') != ''
+        run: |
+          npm ci
+          npm run build
+
+      - name: Stage production application
+        run: |
+          test -f scripts/stage-cpanel-deploy.sh
+          bash scripts/stage-cpanel-deploy.sh "$GITHUB_WORKSPACE/deploy-staging"
+
+      - name: Verify staged files
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/deploy-staging"
+          test -f artisan
+          test -f vendor/autoload.php
+          test -f public/index.php
+          test -f public/.htaccess
+          test -f public/css/app.css
+          test ! -e .env
+          test ! -e database/database.sqlite
+          test ! -d tests
+          test ! -d release
+
+      - name: Deploy via explicit FTPS
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
           server: ${{ secrets.FTP_SERVER }}
@@ -6,17 +89,12 @@
           password: ${{ secrets.FTP_PASSWORD }}
           protocol: ftps
           port: 21
-
-          # deploy-staging contains artisan, vendor/, and public/.
-          # ./ is the login directory of the dedicated FTP account.
           local-dir: ./deploy-staging/
           server-dir: ./
-
-          dry-run: false
+          dry-run: true
           dangerous-clean-slate: false
           log-level: standard
           timeout: 600000
-
           exclude: |
             **/.git*
             **/.git*/**
