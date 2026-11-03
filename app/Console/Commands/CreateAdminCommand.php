@@ -9,14 +9,24 @@ use Illuminate\Support\Facades\Validator;
 
 class CreateAdminCommand extends Command
 {
-    protected $signature = 'rondino:create-admin {email} {--name=مدیر} {--password=}';
+    protected $signature = 'rondino:create-admin
+        {email : Admin email address}
+        {--name=مدیر : Display name}
+        {--password= : Password (avoid on shared hosts — prefer --password-file)}
+        {--password-file= : Absolute path to a private file whose first line is the password}';
 
     protected $description = 'Create or update an admin team account (no public registration)';
 
     public function handle(): int
     {
         $email = $this->argument('email');
-        $password = $this->option('password') ?: $this->secret('Password');
+        $password = $this->resolvePassword();
+
+        if ($password === null || $password === '') {
+            $this->error('Password required via --password-file (preferred) or --password.');
+
+            return self::FAILURE;
+        }
 
         $v = Validator::make(
             ['email' => $email, 'password' => $password],
@@ -41,5 +51,32 @@ class CreateAdminCommand extends Command
         $this->info('Admin ready: '.$user->email);
 
         return self::SUCCESS;
+    }
+
+    private function resolvePassword(): ?string
+    {
+        $file = $this->option('password-file');
+        if (is_string($file) && $file !== '') {
+            if (! is_file($file) || ! is_readable($file)) {
+                $this->error('Password file not readable: '.$file);
+
+                return null;
+            }
+
+            $line = preg_split("/\r\n|\n|\r/", (string) file_get_contents($file))[0] ?? '';
+
+            return trim($line);
+        }
+
+        $direct = $this->option('password');
+        if (is_string($direct) && $direct !== '') {
+            return $direct;
+        }
+
+        if ($this->input->isInteractive()) {
+            return $this->secret('Password');
+        }
+
+        return null;
     }
 }

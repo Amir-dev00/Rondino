@@ -59,20 +59,23 @@ php artisan sources:audit
 php artisan crawl:due --force
 ```
 
-## مسیر ۲ — cPanel بدون SSH / بدون Composer
+## مسیر ۲ — cPanel بدون Terminal / SSH / Composer
 
-1. روی ماشین توسعه: `composer install --no-dev` و `php artisan key:generate` (کلید را بعداً روی سرور عوض کنید).
-2. بستهٔ آمادهٔ `release/rondino-cpanel.zip` را آپلود و از حالت فشرده خارج کنید (مثلاً در `~/rondino`).
-3. فایل `.env` را از `.env.example` بسازید؛ `APP_KEY` را با یک کلید امن پر کنید (از محیط توسعه کپی نکنید اگر بسته عمومی است).
-4. دیتابیس MySQL را در cPanel بسازید و مشخصات را در `.env` بگذارید.
-5. محتویات `public/` را در document root قرار دهید و در `index.php` مسیر bootstrap را به پوشهٔ اپ اصلاح کنید.
-6. از **Terminal/SSH محدود** یا اسکریپت یک‌بارهٔ محلی با PHP CLI همان هاست اجرا کنید:
-   - `php artisan migrate --force`
-   - `php artisan sources:sync`
-   - `php artisan rondino:create-admin ...`
-7. نصب‌کننده یا مسیر migration عمومی وجود ندارد — عمداً.
+راهنمای کامل فارسی: [`docs/INSTALL-NO-TERMINAL-FA.md`](docs/INSTALL-NO-TERMINAL-FA.md)
 
-Writable: `storage/` و `bootstrap/cache/`.
+خلاصه:
+
+1. در cPanel دیتابیس + کاربر بسازید و `release/rondino-install.sql` را با phpMyAdmin داخل همان دیتابیس خالی Import کنید (utf8mb4؛ بدون migrate روی سرور).
+2. `release/rondino-cpanel.zip` را خارج از web root باز کنید؛ محتویات `public/` را به document root بدهید.
+3. از `.env.example` فایل `.env` بسازید و `APP_KEY` یکتا را **روی رایانهٔ خود** با `php -r "echo 'base64:'.base64_encode(random_bytes(32)), PHP_EOL;"` تولید کنید (کلید مشترک در بسته نیست).
+4. اولین مدیر را با کرون یک‌باره و `--password-file` بسازید (رمز داخل کرون/ZIP نباشد) — جزئیات در راهنمای بالا.
+5. کرون دائمی:
+
+```text
+*/5 * * * * /usr/local/bin/php /home/ACCOUNT/rondino/artisan crawl:scheduled >> /home/ACCOUNT/rondino/storage/logs/cron.log 2>&1
+```
+
+نصب‌کنندهٔ وب یا مسیر migration عمومی وجود ندارد — عمداً. Writable: `storage/` و `bootstrap/cache/`.
 
 ## فرمان‌های مهم
 

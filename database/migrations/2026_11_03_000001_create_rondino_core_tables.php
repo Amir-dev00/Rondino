@@ -62,9 +62,10 @@ return new class extends Migration
             $table->string('city_raw', 255)->nullable();
             $table->string('seller_key', 191)->nullable();
             $table->string('availability', 32)->default('available'); // available|sold|not_observed|unreachable
-            $table->timestamp('first_seen_at');
-            $table->timestamp('last_seen_at');
-            $table->timestamp('last_checked_at');
+            // dateTime avoids MariaDB/MySQL NO_ZERO_DATE issues with non-null timestamps
+            $table->dateTime('first_seen_at');
+            $table->dateTime('last_seen_at');
+            $table->dateTime('last_checked_at');
             $table->timestamps();
 
             $table->unique(['source_id', 'external_id']);
@@ -92,7 +93,7 @@ return new class extends Migration
             $table->unsignedBigInteger('price_amount')->nullable();
             $table->string('price_raw', 255)->nullable();
             $table->string('price_type', 32)->default('unknown');
-            $table->timestamp('observed_at');
+            $table->dateTime('observed_at');
             $table->timestamps();
 
             $table->index(['offer_id', 'observed_at']);
