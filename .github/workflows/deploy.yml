@@ -1,132 +1,38 @@
-name: Deploy Rondino to cPanel
+name: Deploy to cPanel
 
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-concurrency:
-  group: production-cpanel-ftps
-  cancel-in-progress: false
+    branches:
+      - main
 
 jobs:
   deploy:
+    name: Deploy Production
     runs-on: ubuntu-latest
-    # First FTPS upload of vendor/ is many small files; allow a long window.
-    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Set up PHP
-        uses: shivammathur/setup-php@v2
+      - name: Deploy to cPanel via FTPS
+        uses: SamKirkland/FTP-Deploy-Action@v4.4.0
         with:
-          php-version: '8.4'
-          extensions: bcmath, ctype, curl, dom, fileinfo, mbstring, openssl, pdo_mysql, pdo_sqlite, tokenizer, xml
-          coverage: none
-          tools: composer:v2
-
-      - name: Install dependencies for tests
-        run: composer install --prefer-dist --no-interaction --no-progress
-
-      - name: Prepare test environment
-        run: |
-          cp .env.example .env
-          php artisan key:generate --force
-          mkdir -p database
-          touch database/database.sqlite
-
-      - name: Run tests
-        run: php vendor/bin/phpunit --testdox
-        env:
-          APP_ENV: testing
-          DB_CONNECTION: sqlite
-          DB_DATABASE: ${{ github.workspace }}/database/database.sqlite
-          CACHE_STORE: array
-          SESSION_DRIVER: array
-          QUEUE_CONNECTION: sync
-
-      - name: Set up Node for frontend build
-        if: hashFiles('package-lock.json') != ''
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-
-      - name: Build frontend assets
-        if: hashFiles('package-lock.json') != ''
-        run: |
-          npm ci
-          npm run build
-
-      - name: Stage production application
-        run: |
-          test -f scripts/stage-cpanel-deploy.sh
-          bash scripts/stage-cpanel-deploy.sh "$GITHUB_WORKSPACE/deploy-staging"
-
-      - name: Verify staged files
-        run: |
-          set -euo pipefail
-          cd "$GITHUB_WORKSPACE/deploy-staging"
-          test -f artisan
-          test -f vendor/autoload.php
-          test -f public/index.php
-          test -f public/.htaccess
-          test -f public/css/app.css
-          test ! -e .env
-          test ! -e database/database.sqlite
-          test ! -d tests
-          test ! -d release
-
-      # Explicit FTPS = ftp:// + ssl-force on port 21 (NOT ftps:// implicit/990).
-      # Parallel lftp is used because single-thread FTP timed out at 45m on vendor/.
-      - name: Deploy via explicit FTPS (lftp)
-        env:
-          FTP_SERVER: ${{ secrets.FTP_SERVER }}
-          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq lftp
-          test -d deploy-staging
-          # Heredoc keeps special characters in FTP_PASSWORD intact.
-          lftp <<EOF
-          set cmd:fail-exit yes
-          set net:timeout 90
-          set net:max-retries 8
-          set net:reconnect-interval-base 5
-          set ftp:ssl-force true
-          set ftp:ssl-protect-data true
-          set ftp:passive-mode true
-          set ssl:verify-certificate no
-          set mirror:parallel-transfer-count 8
-          open -p 21 ftp://${FTP_SERVER}
-          user "${FTP_USERNAME}" "${FTP_PASSWORD}"
-          lcd deploy-staging
-          mirror -R --parallel=8 --verbose \
-            --exclude-glob .git \
-            --exclude-glob .git/** \
-            --exclude-glob .github \
-            --exclude-glob .github/** \
-            --exclude-glob .env \
-            --exclude-glob .env.* \
-            --exclude-glob node_modules \
-            --exclude-glob node_modules/** \
-            --exclude-glob tests \
-            --exclude-glob tests/** \
-            --exclude-glob release \
-            --exclude-glob release/** \
-            --exclude-glob '*.sqlite' \
-            --exclude-glob '*.sql' \
-            --exclude-glob storage/** \
-            --exclude-glob bootstrap/cache/*.php \
-            --exclude-glob public/storage/** \
-            --exclude-glob public/uploads/** \
-            ./ ./
-          bye
-          EOF
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          port: 21
+          server-dir: /
+          dry-run: true
+          log-level: standard
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/.github/**
+            **/.env
+            **/node_modules/**
+            **/.idea/**
+            **/.vscode/**
+            **/*.log
+            **/uploads/**
+            **/public/uploads/**
