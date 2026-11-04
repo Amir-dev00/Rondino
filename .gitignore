@@ -1,0 +1,10 @@
+/config/local.php
+/storage/logs/*
+!/storage/logs/.gitkeep
+/release/*.zip
+/release/.staging-cpanel/
+/release/.rondino-simple-cpanel.build.zip
+Thumbs.db
+Desktop.ini
+*.log
+.DS_Store
