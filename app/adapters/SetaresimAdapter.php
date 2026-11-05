@@ -23,6 +23,6 @@ final class SetaresimAdapter extends BaseAdapter
 
     public function parseListPage(string $html, string $pageUrl): array
     {
-        return [];
+        throw new RuntimeException('پارسر ستاره سیم هنوز پیاده سازی نشده؛ دریافت پاسخ HTTP موفق به معنی استخراج موفق نیست.');
     }
 }
