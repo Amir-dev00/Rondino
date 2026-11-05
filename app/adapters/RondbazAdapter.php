@@ -12,18 +12,17 @@ final class RondbazAdapter extends BaseAdapter
     {
         return [
             'https://www.rondbaz.com/',
-            'https://www.rondbaz.com/mci/?cell_box_1_4=0912',
+            'https://www.rondbaz.com/mci/?cell_box_1_4=0912&operator_type=%D8%AF%D8%A7%D8%A6%D9%85%DB%8C',
         ];
     }
 
     public function notes(): string
     {
-        return 'بلاکر تأییدشده: کل دامنه HTTP 404 می‌دهد (خانه و مسیرهای MCI). سلکتورهای قدیمی .vitrin-sim-card دیگر قابل راستی‌آزمایی نیستند.';
+        return 'Public home and MCI pages were reachable in web inspection; PHP access and pagination remain unverified.';
     }
 
     public function parseListPage(string $html, string $pageUrl): array
     {
-        // Keep parser for historical fixtures only; live host returns 404 before parse.
         if (!str_contains($html, 'vitrin-sim-card') && str_contains($html, 'vitrin-price')) {
             $html = '<div class="vitrin-sim-card">' . $html;
         }
@@ -68,6 +67,9 @@ final class RondbazAdapter extends BaseAdapter
                 'contacts' => [],
                 'seller_key' => $storeSlug,
             ]);
+        }
+        if ($listings === []) {
+            throw new RuntimeException('Rondbaz listing markup not recognized; verify access and parser.');
         }
         return $listings;
     }
