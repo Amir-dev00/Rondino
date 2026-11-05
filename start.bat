@@ -45,12 +45,21 @@ if not defined PORT (
 )
 
 echo سرور محلی روی http://127.0.0.1:%PORT%
+echo کارگر خزش محلی در پس‌زمینه اجرا می‌شود (بدون ترمینال جدا).
+echo خزش فعلی فقط با PHP است؛ مرورگر خودکار برای منابع فعال لازم نیست.
+echo منابع مسدود (rondbaz / setaresim / rond.ir) روی cPanel هم در دسترس نیستند.
 echo برای توقف، Ctrl+C را بزنید.
 echo.
+
+if not exist "%ROOT%storage\logs" mkdir "%ROOT%storage\logs" >nul 2>&1
+if exist "%ROOT%storage\logs\crawl-worker.stop" del /f /q "%ROOT%storage\logs\crawl-worker.stop" >nul 2>&1
+start "Rondino Crawl Worker" /MIN php "%ROOT%scripts\crawl-worker.php"
 
 start "" "http://127.0.0.1:%PORT%/"
 php -S 127.0.0.1:%PORT% -t "%ROOT%public"
 set "ERR=%ERRORLEVEL%"
+
+echo. > "%ROOT%storage\logs\crawl-worker.stop"
 echo.
 if not "%ERR%"=="0" (
   echo [خطا] سرور PHP متوقف شد با کد %ERR%.

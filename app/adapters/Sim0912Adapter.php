@@ -34,4 +34,9 @@ final class Sim0912Adapter extends BaseAdapter
             fn ($d) => $this->listing($d)
         );
     }
+
+    public function nextPageUrl(string $html, string $pageUrl, int $pageIndex): ?string
+    {
+        return WooHelpers::nextPageUrl($html, $pageUrl, $pageIndex);
+    }
 }

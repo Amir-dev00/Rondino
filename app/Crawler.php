@@ -2,123 +2,164 @@
 
 declare(strict_types=1);
 
+/**
+ * Facade used by HTTP refresh API and CLI worker.
+ * Local/default: concurrent seeds via CrawlEngine.
+ * cPanel: same engine with smaller page budget from config.
+ */
 final class Crawler
 {
-    /**
-     * Refresh one source with a bounded batch of seed URLs / pages.
-     *
-     * @return array{ok:bool, offers_found:int, upserted:int, error:?string, message:string}
-     */
-    public function refreshSource(string $slug, int $maxPages = 2): array
+    private int $pageBudget;
+    private CrawlEngine $engine;
+
+    public function __construct(?int $pageBudget = null)
     {
-        $adapter = Registry::get($slug);
-        if (!$adapter) {
-            return ['ok' => false, 'offers_found' => 0, 'upserted' => 0, 'error' => 'منبع ناشناخته', 'message' => 'منبع یافت نشد.'];
-        }
+        $cfg = (int) config('crawl_page_budget', 4);
+        $this->pageBudget = max(1, $pageBudget ?? ($cfg > 0 ? $cfg : 4));
+        $this->engine = new CrawlEngine();
+    }
 
+    /**
+     * @return array<string,mixed>
+     */
+    public function runBatch(string $slug, bool $restart = false): array
+    {
+        return $this->engine->advanceSource($slug, $restart, $this->pageBudget);
+    }
+
+    /**
+     * @return array<string,mixed>
+     */
+    public function runRotatedBatch(bool $startFresh = false): array
+    {
         $pdo = Database::pdo();
-        $stmt = $pdo->prepare('SELECT * FROM sources WHERE slug = ? LIMIT 1');
+        $sources = $pdo->query('SELECT id, slug FROM sources WHERE is_enabled = 1 ORDER BY id')->fetchAll();
+        if ($sources === []) {
+            return ['done' => true, 'message' => 'منبعی نیست.', 'all_progress' => []];
+        }
+
+        // Prefer incomplete; optionally restart completed when startFresh
+        $candidates = [];
+        foreach ($sources as $s) {
+            $slug = $s['slug'];
+            $snap = $this->progressSnapshot($slug);
+            $st = $snap['status'] ?? 'idle';
+            if (in_array($st, ['paused', 'running', 'idle'], true)) {
+                $candidates[] = ['slug' => $slug, 'restart' => $st === 'idle', 'priority' => 0, 'updated' => (string) ($snap['updated_at'] ?? '')];
+            } elseif ($startFresh && in_array($st, ['completed', 'blocked'], true)) {
+                $candidates[] = ['slug' => $slug, 'restart' => true, 'priority' => 1, 'updated' => (string) ($snap['updated_at'] ?? '')];
+            }
+        }
+        if ($candidates === []) {
+            return ['done' => true, 'message' => 'همه گذرهای فعال تمام یا مسدود شده‌اند.', 'all_progress' => $this->allProgress()];
+        }
+        usort($candidates, static function ($a, $b) {
+            if ($a['priority'] !== $b['priority']) {
+                return $a['priority'] <=> $b['priority'];
+            }
+            return strcmp($a['updated'], $b['updated']);
+        });
+
+        // Local HTTP path: advance several sources in one request when concurrency allows
+        $wave = max(1, min(4, (int) config('crawl_rotate_wave', 2)));
+        $picked = array_slice($candidates, 0, $wave);
+        $last = null;
+        foreach ($picked as $pick) {
+            $last = $this->engine->advanceSource($pick['slug'], (bool) $pick['restart'], $this->pageBudget);
+        }
+        $still = 0;
+        foreach ($this->allProgress() as $p) {
+            if (in_array($p['status'], ['idle', 'paused', 'running'], true)) {
+                $still++;
+            }
+        }
+        $result = $last ?? ['ok' => true];
+        $result['rotate'] = true;
+        $result['done'] = $still === 0;
+        $result['all_progress'] = $this->allProgress();
+        if ($result['done']) {
+            $result['message'] = 'همه منابع این دور بررسی شدند.';
+        }
+        return $result;
+    }
+
+    /** @return list<array<string,mixed>> */
+    public function allProgress(): array
+    {
+        $out = [];
+        foreach (Registry::all() as $slug => $_adapter) {
+            $out[] = $this->progressSnapshot($slug);
+        }
+        return $out;
+    }
+
+    /** @return array<string,mixed> */
+    public function progressSnapshot(string $slug): array
+    {
+        $pdo = Database::pdo();
+        $stmt = $pdo->prepare('SELECT id, slug, name, last_success_at, last_error, last_offers_found FROM sources WHERE slug = ?');
         $stmt->execute([$slug]);
-        $source = $stmt->fetch();
-        if (!$source) {
-            return ['ok' => false, 'offers_found' => 0, 'upserted' => 0, 'error' => 'منبع در پایگاه نیست', 'message' => 'منبع در پایگاه داده نیست.'];
-        }
+        $src = $stmt->fetch() ?: ['slug' => $slug, 'name' => $slug];
+        $pstmt = $pdo->prepare('SELECT * FROM crawl_passes WHERE source_id = (SELECT id FROM sources WHERE slug = ? LIMIT 1)');
+        $pstmt->execute([$slug]);
+        $pass = $pstmt->fetch();
+        $adapter = Registry::get($slug);
+        $seedCount = $adapter ? count($adapter->seedUrls()) : 0;
 
-        $sourceId = (int) $source['id'];
-        $now = now_dt();
-        $pdo->prepare('UPDATE sources SET last_attempt_at = ? WHERE id = ?')->execute([$now, $sourceId]);
-        $pdo->prepare(
-            'INSERT INTO crawl_runs (source_id, started_at, status) VALUES (?,?,?)'
-        )->execute([$sourceId, $now, 'running']);
-        $runId = (int) $pdo->lastInsertId();
-
-        $timeout = (int) config('http_timeout', 25);
-        $store = new OfferStore();
-        $allListings = [];
-        $errors = [];
-
-        try {
-            $seeds = $adapter->seedUrls();
-            // Bound batch: first N seed URLs only per request so UI stays responsive
-            $seeds = array_slice($seeds, 0, max(1, min(count($seeds), 3)));
-
-            foreach ($seeds as $seed) {
-                $pageUrl = $seed;
-                for ($page = 1; $page <= $maxPages; $page++) {
-                    $res = Http::get($pageUrl, $timeout);
-                    if (!$res['ok']) {
-                        $errors[] = $pageUrl . ': ' . ($res['error'] ?? 'خطا');
-                        break;
-                    }
-                    $parsed = $adapter->parseListPage($res['body'], $res['final_url'] ?: $pageUrl);
-                    foreach ($parsed as $row) {
-                        $allListings[] = $row;
-                    }
-                    $next = $adapter->nextPageUrl($res['body'], $pageUrl, $page);
-                    if ($next === null || $next === $pageUrl) {
-                        break;
-                    }
-                    $pageUrl = $next;
-                    usleep(400000); // polite pause ~0.4s
-                }
-                usleep(500000);
-            }
-
-            // Deduplicate by external_id within this run
-            $unique = [];
-            foreach ($allListings as $row) {
-                $key = (string) ($row['external_id'] ?? '');
-                if ($key === '') {
-                    continue;
-                }
-                $unique[$key] = $row;
-            }
-            $list = array_values($unique);
-            $result = $store->upsertMany($sourceId, $list);
-            $found = count($list);
-            $finished = now_dt();
-            $errText = $errors === [] ? null : mb_substr(implode(' | ', $errors), 0, 900);
-
-            // Success if we got HTML parse path without total failure, even with 0 offers
-            $ok = $errors === [] || $found > 0;
-            if ($errors !== [] && $found === 0) {
-                $ok = false;
-            }
-
-            $pdo->prepare(
-                'UPDATE sources SET last_success_at = IF(?, ?, last_success_at), last_error = ?, last_offers_found = ? WHERE id = ?'
-            )->execute([$ok ? 1 : 0, $finished, $errText, $found, $sourceId]);
-
-            $pdo->prepare(
-                'UPDATE crawl_runs SET finished_at=?, status=?, offers_found=?, error_message=? WHERE id=?'
-            )->execute([$finished, $ok ? 'ok' : 'error', $found, $errText, $runId]);
-
-            $msg = $ok
-                ? "{$found} آگهی خوانده شد؛ {$result['upserted']} ذخیره/به‌روز شد."
-                : ('بروزرسانی ناموفق: ' . ($errText ?: 'خطای ناشناخته'));
-
+        if (!$pass) {
             return [
-                'ok' => $ok,
-                'offers_found' => $found,
-                'upserted' => $result['upserted'],
-                'error' => $errText,
-                'message' => $msg,
-            ];
-        } catch (Throwable $e) {
-            $finished = now_dt();
-            $msg = mb_substr($e->getMessage(), 0, 900);
-            $pdo->prepare('UPDATE sources SET last_error = ? WHERE id = ?')->execute([$msg, $sourceId]);
-            $pdo->prepare(
-                'UPDATE crawl_runs SET finished_at=?, status=?, error_message=? WHERE id=?'
-            )->execute([$finished, 'error', $msg, $runId]);
-            app_log('crawl ' . $slug . ': ' . $e->getMessage());
-            return [
-                'ok' => false,
+                'slug' => $slug,
+                'name' => $src['name'] ?? $slug,
+                'status' => 'idle',
+                'status_fa' => 'آماده',
+                'seed_index' => 0,
+                'page_index' => 0,
+                'seed_total' => $seedCount,
                 'offers_found' => 0,
-                'upserted' => 0,
-                'error' => $msg,
-                'message' => 'خطا: ' . $msg,
+                'last_batch_offers' => 0,
+                'last_batch_at' => null,
+                'last_batch_at_fa' => '—',
+                'progress_label' => 'هنوز شروع نشده',
+                'last_error' => $src['last_error'] ?? null,
+                'updated_at' => null,
+                'updated_at_fa' => '—',
             ];
         }
+
+        $status = (string) $pass['status'];
+        $statusFa = match ($status) {
+            'running' => 'در حال اجرا',
+            'paused' => 'متوقف موقت',
+            'completed' => 'کامل',
+            'blocked' => 'مسدود',
+            default => $status,
+        };
+
+        $branchErrors = [];
+        if (!empty($pass['branch_errors'])) {
+            $decoded = json_decode((string) $pass['branch_errors'], true);
+            $branchErrors = is_array($decoded) ? array_values(array_map('strval', $decoded)) : [(string) $pass['branch_errors']];
+        }
+
+        return [
+            'slug' => $slug,
+            'name' => $src['name'] ?? $slug,
+            'status' => $status,
+            'status_fa' => $statusFa,
+            'seed_index' => (int) $pass['seed_index'],
+            'page_index' => (int) $pass['page_index'],
+            'seed_total' => $seedCount,
+            'offers_found' => (int) $pass['offers_found'],
+            'pages_fetched' => (int) $pass['pages_fetched'],
+            'last_batch_offers' => (int) $pass['last_batch_offers'],
+            'last_batch_at' => $pass['last_batch_at'],
+            'last_batch_at_fa' => Jalali::formatDateTime($pass['last_batch_at'] ?? null),
+            'progress_label' => $pass['progress_label'],
+            'last_error' => $pass['last_error'] ?: ($src['last_error'] ?? null),
+            'branch_errors' => $branchErrors,
+            'updated_at' => $pass['updated_at'],
+            'updated_at_fa' => Jalali::formatDateTime($pass['updated_at'] ?? null),
+            'current_url' => $pass['current_url'],
+        ];
     }
 }

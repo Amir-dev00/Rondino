@@ -7,7 +7,9 @@
 ## مسیرهای مهم
 
 - `start.bat` — اجرای روزانه روی ویندوز
-- `database/rondino-install.sql` — نصب پایگاه در phpMyAdmin
+- `database/rondino-install.sql` — نصب پایگاه در phpMyAdmin (نصب تازه)
+- `database/rondino-upgrade-crawl-progress.sql` — ارتقای غیرتخریبی برای پایگاه موجود (جدول `crawl_passes`)
+- `database/rondino-upgrade-crawl-speed.sql` — ارتقای سرعت (ستون `branch_state` + جدول `crawl_jobs`)
 - `release/rondino-simple-cpanel.zip` — بستهٔ cPanel
 
 ---
@@ -28,7 +30,7 @@
 ## راهنمای cPanel (فقط File Manager و phpMyAdmin)
 
 1. در cPanel یک پایگاه MySQL و کاربر بسازید و کاربر را به پایگاه وصل کنید.
-2. در phpMyAdmin همان پایگاه خالی را انتخاب کنید و فایل `database/rondino-install.sql` را Import کنید.
+2. در phpMyAdmin: اگر پایگاه خالی است `database/rondino-install.sql` را Import کنید. اگر از قبل داده دارید، به‌ترتیب `database/rondino-upgrade-crawl-progress.sql` و سپس `database/rondino-upgrade-crawl-speed.sql` را Import کنید — داده‌های فعلی حفظ می‌شوند. روی cPanel در `config/local.php` مقدارهای `crawl_page_budget=1`، `crawl_use_worker=0` پیشنهاد می‌شود.
 3. فایل `release/rondino-simple-cpanel.zip` را آپلود و Extract کنید.
 4. محتوای پوشهٔ `public/` را در Document Root سایت/ساب‌دامین بگذارید (معمولاً `public_html`).
 5. پوشه‌های `app/`، `views/`، `config/`، `database/` را یک سطح بالاتر از Document Root نگه دارید (خصوصی بمانند). اگر ساختار ZIP را کنار هم استخراج کرده‌اید، Document Root را روی زیرپوشهٔ `public` تنظیم کنید.

@@ -14,6 +14,12 @@ final class Digits
         return str_replace(self::ARABIC, self::LATIN, $out);
     }
 
+    /** Convert Latin digits to Persian digits (for display). */
+    public static function toPersian(string $input): string
+    {
+        return str_replace(self::LATIN, self::PERSIAN, $input);
+    }
+
     public static function only(string $input): string
     {
         return preg_replace('/\D+/', '', $input) ?? '';

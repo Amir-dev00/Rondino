@@ -54,31 +54,55 @@ $user = Auth::requireLogin();
 
 if ($route === 'refresh' && request_is_post()) {
     Csrf::verify(post('_csrf'));
+    // Release session lock so parallel AJAX / status polls are not serialized
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_write_close();
+    }
     header('Content-Type: application/json; charset=utf-8');
     $slug = (string) post('slug', '');
     $mode = (string) post('mode', 'one');
     $crawler = new Crawler();
-    if ($mode === 'all') {
-        $sources = Database::pdo()->query('SELECT slug FROM sources WHERE is_enabled = 1 ORDER BY id')->fetchAll();
-        $idx = (int) post('index', '0');
-        if ($idx < 0 || $idx >= count($sources)) {
-            echo json_encode(['done' => true, 'message' => 'همه منابع بررسی شدند.', 'index' => $idx, 'total' => count($sources)], JSON_UNESCAPED_UNICODE);
-            exit;
-        }
-        $slug = $sources[$idx]['slug'];
-        $result = $crawler->refreshSource($slug, 2);
+    $useWorker = (int) config('crawl_use_worker', 0) === 1;
+
+    if ($mode === 'status') {
+        $job = CrawlJob::latest();
         echo json_encode([
-            'done' => false,
-            'index' => $idx,
-            'next' => $idx + 1,
-            'total' => count($sources),
-            'slug' => $slug,
-            'result' => $result,
+            'ok' => true,
+            'worker' => $useWorker,
+            'job' => $job,
+            'all_progress' => $crawler->allProgress(),
         ], JSON_UNESCAPED_UNICODE);
         exit;
     }
-    $result = $crawler->refreshSource($slug, 2);
-    echo json_encode(['done' => true, 'slug' => $slug, 'result' => $result], JSON_UNESCAPED_UNICODE);
+
+    // Local worker path: browser only enqueues / attaches; CLI worker crawls
+    if ($useWorker && ($mode === 'all' || $mode === 'job')) {
+        $startFresh = post('start', '') === '1' || $mode === 'job';
+        $job = CrawlJob::activeOrCreate($startFresh ? 'full' : 'resume', $startFresh);
+        echo json_encode([
+            'ok' => true,
+            'worker' => true,
+            'done' => in_array((string) ($job['status'] ?? ''), ['completed', 'failed', 'cancelled'], true),
+            'job' => $job,
+            'message' => 'کار به کارگر محلی سپرده شد؛ پیشرفت از MySQL خوانده می‌شود.',
+            'all_progress' => $crawler->allProgress(),
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+
+    if ($mode === 'all') {
+        $startFresh = post('start', '') === '1';
+        $result = $crawler->runRotatedBatch($startFresh);
+        echo json_encode($result, JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    $restart = post('restart', '1') === '1' && post('continue', '') !== '1';
+    if (post('continue', '') === '1') {
+        $restart = false;
+    }
+    // Single-source: still run in-request (works on cPanel and local)
+    $result = $crawler->runBatch($slug, $restart);
+    echo json_encode(['done' => in_array($result['pass_status'] ?? '', ['completed', 'blocked'], true), 'slug' => $slug, 'result' => $result], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -87,8 +111,15 @@ if ($route === 'deal' && request_is_post()) {
     $sim = Digits::extractSim0912((string) post('sim_number', '')) ?? '';
     $type = post('deal_type', '') === 'sell' ? 'sell' : 'buy';
     $amount = (int) preg_replace('/\D+/', '', Digits::normalize((string) post('amount_toman', '0')));
-    $date = (string) post('deal_date', date('Y-m-d'));
+    $dateFa = (string) post('deal_date', '');
     $note = mb_substr((string) post('note', ''), 0, 500);
+    $_SESSION['_deal_date_fa'] = $dateFa;
+    $_SESSION['_deal_sim'] = (string) post('sim_number', '');
+    $parsedDate = Jalali::parseDateInput($dateFa);
+    if (!$parsedDate['ok']) {
+        flash_set('error', $parsedDate['error'] ?? 'تاریخ نامعتبر است.');
+        redirect('/?r=deals');
+    }
     if (!Digits::isValid0912($sim) || $amount <= 0) {
         flash_set('error', 'شماره یا مبلغ معتبر نیست.');
         redirect('/?r=deals');
@@ -96,7 +127,8 @@ if ($route === 'deal' && request_is_post()) {
     $stmt = Database::pdo()->prepare(
         'INSERT INTO team_deals (user_id, sim_number, deal_type, amount_toman, deal_date, note, created_at) VALUES (?,?,?,?,?,?,?)'
     );
-    $stmt->execute([(int) $user['id'], $sim, $type, $amount, $date, $note !== '' ? $note : null, now_dt()]);
+    $stmt->execute([(int) $user['id'], $sim, $type, $amount, $parsedDate['ymd'], $note !== '' ? $note : null, now_dt()]);
+    unset($_SESSION['_deal_date_fa'], $_SESSION['_deal_sim']);
     flash_set('ok', 'معامله ثبت شد.');
     redirect('/?r=deals');
 }

@@ -30,15 +30,16 @@ final class Endline912Adapter extends BaseAdapter
 
     public function nextPageUrl(string $html, string $pageUrl, int $pageIndex): ?string
     {
-        if ($pageIndex >= 6) {
-            return null;
-        }
         if (preg_match('/data-max-page=\"(\d+)\"/', $html, $m) && $pageIndex >= (int) $m[1]) {
             return null;
         }
         if (!str_contains($html, '/page/') && !str_contains($html, 'e-load-more-anchor')) {
             return null;
         }
-        return 'https://endline912.com/page/' . ($pageIndex + 1) . '/';
+        $next = $pageIndex + 1;
+        if (preg_match('/data-max-page=\"(\d+)\"/', $html, $m2) && $next > (int) $m2[1]) {
+            return null;
+        }
+        return 'https://endline912.com/page/' . $next . '/';
     }
 }

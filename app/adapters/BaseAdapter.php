@@ -15,6 +15,16 @@ abstract class BaseAdapter implements AdapterInterface
     }
 
     /**
+     * Optional non-GET fetch. Return null to use CrawlEngine's default Http::get.
+     *
+     * @return null|array{ok:bool,status:int,body:string,error:?string,final_url:string,headers?:array<string,string>}
+     */
+    public function fetchPage(string $url, int $timeout = 25): ?array
+    {
+        return null;
+    }
+
+    /**
      * @param list<array{phone?:string,type?:string,scope?:string,label?:?string}> $contacts
      * @return list<array{phone:string,type:string,scope:string,label:?string}>
      */

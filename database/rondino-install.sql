@@ -126,6 +126,49 @@ CREATE TABLE crawl_runs (
   CONSTRAINT fk_crawl_runs_source FOREIGN KEY (source_id) REFERENCES sources (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE crawl_passes (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  source_id SMALLINT UNSIGNED NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'running',
+  seed_index INT UNSIGNED NOT NULL DEFAULT 0,
+  page_index INT UNSIGNED NOT NULL DEFAULT 1,
+  current_url VARCHAR(1000) NULL,
+  offers_found INT UNSIGNED NOT NULL DEFAULT 0,
+  pages_fetched INT UNSIGNED NOT NULL DEFAULT 0,
+  last_batch_offers INT UNSIGNED NOT NULL DEFAULT 0,
+  last_batch_at DATETIME NULL,
+  progress_label VARCHAR(255) NULL,
+  branch_errors TEXT NULL,
+  last_error VARCHAR(1000) NULL,
+  last_fingerprint CHAR(40) NULL,
+  seed_fingerprint CHAR(40) NULL,
+  branch_state MEDIUMTEXT NULL,
+  lock_token VARCHAR(64) NULL,
+  locked_until DATETIME NULL,
+  started_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  finished_at DATETIME NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_crawl_passes_source (source_id),
+  CONSTRAINT fk_crawl_passes_source FOREIGN KEY (source_id) REFERENCES sources (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE crawl_jobs (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  status VARCHAR(32) NOT NULL DEFAULT 'queued',
+  mode VARCHAR(32) NOT NULL DEFAULT 'full',
+  requested_by VARCHAR(64) NULL,
+  message VARCHAR(500) NULL,
+  metrics_json TEXT NULL,
+  lock_token VARCHAR(64) NULL,
+  locked_until DATETIME NULL,
+  started_at DATETIME NULL,
+  updated_at DATETIME NOT NULL,
+  finished_at DATETIME NULL,
+  PRIMARY KEY (id),
+  KEY idx_crawl_jobs_status (status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 INSERT INTO sources (slug, name, base_url, list_url, is_enabled, refresh_interval_minutes, notes) VALUES
 ('rond-ir', 'rond.ir', 'https://rond.ir', 'https://rond.ir', 1, 120, 'ممکن است تایم‌اوت یا مسدود باشد؛ سلکتور تأییدشده ثبت نشده.'),
 ('tehransim', 'tehransim.com', 'https://tehransim.com', 'https://tehransim.com/home/simkart912', 1, 60, 'کارت‌های SSR صفحه اول.'),

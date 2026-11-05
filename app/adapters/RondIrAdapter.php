@@ -7,10 +7,22 @@ final class RondIrAdapter extends BaseAdapter
     public function slug(): string { return 'rond-ir'; }
     public function name(): string { return 'rond.ir'; }
     public function baseUrl(): string { return 'https://rond.ir'; }
-    public function seedUrls(): array { return ['https://rond.ir']; }
+
+    public function seedUrls(): array
+    {
+        return [
+            'https://rond.ir/',
+            'https://www.rond.ir/',
+        ];
+    }
+
     public function notes(): string
     {
-        return 'مسدود/تایم‌اوت در ممیزی قبلی؛ سلکتور تأییدشده ثبت نشده.';
+        return 'بلاکر تأییدشده: تایم‌اوت اتصال از PHP و مرورگر محلی. سلکتور/API عمومی قابل دسترسی نیست.';
     }
-    public function parseListPage(string $html, string $pageUrl): array { return []; }
+
+    public function parseListPage(string $html, string $pageUrl): array
+    {
+        return [];
+    }
 }

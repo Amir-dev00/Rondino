@@ -69,4 +69,29 @@ final class WooHelpers
         }
         return $listings;
     }
+
+    /**
+     * Follow WooCommerce /page/N/ or rel=next when present. No hard page cap.
+     */
+    public static function nextPageUrl(string $html, string $pageUrl, int $pageIndex): ?string
+    {
+        $dom = Dom::fromHtml($html);
+        $nextLink = $dom->first('a.next.page-numbers') ?: $dom->first('a[rel="next"]');
+        if ($nextLink) {
+            $href = $dom->attr($nextLink, 'href');
+            if ($href) {
+                return absolute_url($pageUrl, $href);
+            }
+        }
+        foreach ($dom->css('a.next') as $a) {
+            $href = $dom->attr($a, 'href');
+            if ($href && (str_contains($href, '/page/') || str_contains($href, 'paged='))) {
+                return absolute_url($pageUrl, $href);
+            }
+        }
+        if (preg_match('/href=["\']([^"\']*\/page\/' . ($pageIndex + 1) . '\/?[^"\']*)["\']/i', $html, $m)) {
+            return absolute_url($pageUrl, html_entity_decode($m[1]));
+        }
+        return null;
+    }
 }

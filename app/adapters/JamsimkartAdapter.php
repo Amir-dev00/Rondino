@@ -7,29 +7,43 @@ final class JamsimkartAdapter extends BaseAdapter
     public function slug(): string { return 'jamsimkart'; }
     public function name(): string { return 'jamsimkart.com'; }
     public function baseUrl(): string { return 'https://www.jamsimkart.com'; }
+
     public function seedUrls(): array
     {
-        return [
-            'https://www.jamsimkart.com/',
-            'https://www.jamsimkart.com/mci/daemi/simcard-pricing',
-        ];
+        return ['https://www.jamsimkart.com/search'];
     }
-    public function notes(): string { return 'کارت‌های .vitrin-item؛ تلفن فروشنده روی کارت نیست.'; }
+
+    public function notes(): string
+    {
+        return 'جدول SSR در /search با صفحه‌بندی ?page=؛ کارت‌های ویترین صفحهٔ اصلی ناقص‌اند.';
+    }
 
     public function parseListPage(string $html, string $pageUrl): array
     {
         $dom = Dom::fromHtml($html);
         $listings = [];
-        foreach ($dom->css('div.vitrin-item') as $card) {
-            $top = $dom->first('pre.vitrin-item-top', $card);
-            $sim = $this->sim($top ? $dom->text($top) : '');
+        foreach ($dom->css('tr') as $row) {
+            $num = $dom->first('h2.sim-list-table-number', $row);
+            if (!$num) {
+                continue;
+            }
+            $sim = $this->sim($dom->text($num));
             if (!$sim) {
                 continue;
             }
-            $priceNode = $dom->first('div.vitrin-item-price', $card);
-            $price = $this->price($priceNode ? $dom->text($priceNode) : '');
+            $external = $sim;
+            $onclick = (string) ($dom->attr($row, 'onclick') ?? '');
+            if (preg_match("/showSimInfo\\('(\\d+)'\\)/", $onclick, $m)) {
+                $external = $m[1];
+            }
+            $priceNode = $dom->first('h5.top-table-price', $row);
+            $priceText = $priceNode ? $dom->text($priceNode) : '';
+            if ($priceText !== '' && !preg_match('/تومان|tooman|toman/ui', Digits::normalize($priceText))) {
+                $priceText .= ' تومان';
+            }
+            $price = $this->price($priceText);
             $conditionRaw = null;
-            foreach ($dom->css('span', $card) as $span) {
+            foreach ($dom->css('span', $row) as $span) {
                 $t = $dom->text($span);
                 if (preg_match('/در\s*حد\s*صفر|در\s*حد\s*نو|کارکرده|صفر\s*پک|^صفر$/u', $t)) {
                     $conditionRaw = $t;
@@ -37,15 +51,13 @@ final class JamsimkartAdapter extends BaseAdapter
                 }
             }
             $condition = $this->condition($conditionRaw);
-            $external = $sim;
-            $onclick = (string) ($dom->attr($card, 'onclick') ?? '');
-            if (preg_match("/showSimInfo\\('(\\d+)'\\)/", $onclick, $m)) {
-                $external = $m[1];
-            }
+            $detail = $dom->first('a[href*="/sim/"]', $row);
+            $href = $detail ? (string) $dom->attr($detail, 'href') : '';
+            $url = $href !== '' ? $this->abs($href) : $this->baseUrl() . '/sim/' . $external;
             $listings[] = $this->listing([
                 'external_id' => $external,
                 'sim_number' => $sim,
-                'canonical_url' => $pageUrl,
+                'canonical_url' => $url,
                 'price_amount' => $price['amount'],
                 'price_raw' => $price['raw'],
                 'price_type' => $price['type'],
@@ -62,12 +74,14 @@ final class JamsimkartAdapter extends BaseAdapter
 
     public function nextPageUrl(string $html, string $pageUrl, int $pageIndex): ?string
     {
-        if ($pageIndex >= 5 || !str_contains($html, 'page=')) {
+        if (!preg_match_all('/[?&]page=(\d+)/', $html, $m) || $m[1] === []) {
             return null;
         }
-        $base = str_contains($pageUrl, 'simcard-pricing')
-            ? $pageUrl
-            : 'https://www.jamsimkart.com/mci/daemi/simcard-pricing';
-        return page_query_url($base, 'page', $pageIndex + 1);
+        $next = $pageIndex + 1;
+        $max = max(array_map('intval', $m[1]));
+        if ($pageIndex >= $max) {
+            return null;
+        }
+        return page_query_url('https://www.jamsimkart.com/search', 'page', $next);
     }
 }

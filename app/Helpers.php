@@ -56,24 +56,43 @@ function now_dt(): string
     return gmdate('Y-m-d H:i:s');
 }
 
-function fa_datetime(?string $utc): string
+/** Display UTC/MySQL timestamp as Jalali in Asia/Tehran with Persian digits. */
+function fa_datetime(?string $utc, bool $withSeconds = false): string
 {
-    if ($utc === null || $utc === '') {
-        return '—';
-    }
-    $ts = strtotime($utc . ' UTC');
-    if ($ts === false) {
-        return e($utc);
-    }
-    return e(date('Y-m-d H:i', $ts + (3 * 3600 + 1800))); // +03:30 display
+    return e(Jalali::formatDateTime($utc, $withSeconds));
 }
 
-function format_toman(?int $amount): string
+/** Display date-only (Y-m-d) as Jalali without timezone conversion. */
+function fa_date(?string $ymd): string
+{
+    return e(Jalali::formatDateOnly($ymd));
+}
+
+function format_toman(?int $amount, bool $withUnit = true): string
 {
     if ($amount === null) {
         return '—';
     }
-    return number_format($amount) . ' تومان';
+    $n = number_format($amount);
+    return $withUnit ? ($n . ' تومان') : $n;
+}
+
+/** Price cell for tables: amount only, or negotiable/unknown label. */
+function format_price_display(?int $amount, string $priceType = 'fixed'): string
+{
+    if ($priceType === 'negotiable') {
+        return 'توافقی';
+    }
+    if ($priceType === 'call') {
+        return 'استعلام';
+    }
+    if ($priceType === 'installment') {
+        return 'اقساط';
+    }
+    if ($amount === null) {
+        return '—';
+    }
+    return format_toman($amount, false);
 }
 
 function condition_label(string $normalized): string
@@ -100,7 +119,12 @@ function price_type_label(string $type): string
 
 function ltr_phone(string $phone): string
 {
-    return '<span class="ltr" dir="ltr">' . e($phone) . '</span>';
+    return '<bdi class="ltr-num" dir="ltr">' . e($phone) . '</bdi>';
+}
+
+function ltr_sim(string $sim): string
+{
+    return '<bdi class="sim-num" dir="ltr">' . e($sim) . '</bdi>';
 }
 
 function flash_set(string $type, string $message): void

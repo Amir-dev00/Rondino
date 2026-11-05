@@ -7,6 +7,7 @@ final class RondbazAdapter extends BaseAdapter
     public function slug(): string { return 'rondbaz'; }
     public function name(): string { return 'rondbaz.com'; }
     public function baseUrl(): string { return 'https://www.rondbaz.com'; }
+
     public function seedUrls(): array
     {
         return [
@@ -14,11 +15,15 @@ final class RondbazAdapter extends BaseAdapter
             'https://www.rondbaz.com/mci/?cell_box_1_4=0912',
         ];
     }
-    public function notes(): string { return 'چندفروشنده؛ کارت‌های .vitrin-sim-card.'; }
+
+    public function notes(): string
+    {
+        return 'بلاکر تأییدشده: کل دامنه HTTP 404 می‌دهد (خانه و مسیرهای MCI). سلکتورهای قدیمی .vitrin-sim-card دیگر قابل راستی‌آزمایی نیستند.';
+    }
 
     public function parseListPage(string $html, string $pageUrl): array
     {
-        // Fixture/live quirk: sometimes opening <div is missing in fragments
+        // Keep parser for historical fixtures only; live host returns 404 before parse.
         if (!str_contains($html, 'vitrin-sim-card') && str_contains($html, 'vitrin-price')) {
             $html = '<div class="vitrin-sim-card">' . $html;
         }

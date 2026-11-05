@@ -7,11 +7,20 @@ final class TehransimAdapter extends BaseAdapter
     public function slug(): string { return 'tehransim'; }
     public function name(): string { return 'tehransim.com'; }
     public function baseUrl(): string { return 'https://tehransim.com'; }
+
     public function seedUrls(): array
     {
-        return ['https://tehransim.com/', 'https://tehransim.com/home/simkart912'];
+        $urls = [];
+        for ($code = 0; $code <= 9; $code++) {
+            $urls[] = 'https://tehransim.com/sim-cart/0912/code-' . $code;
+        }
+        return $urls;
     }
-    public function notes(): string { return 'کارت‌های SSR صفحه اول.'; }
+
+    public function notes(): string
+    {
+        return 'SSR واقعی روی /sim-cart/0912/code-0..9؛ پارامتر ?page= موجودی جدید نمی‌دهد.';
+    }
 
     public function parseListPage(string $html, string $pageUrl): array
     {
@@ -58,13 +67,7 @@ final class TehransimAdapter extends BaseAdapter
 
     public function nextPageUrl(string $html, string $pageUrl, int $pageIndex): ?string
     {
-        if ($pageIndex >= 3) {
-            return null;
-        }
-        if (!str_contains($html, 'page-end') && !str_contains($html, 'pagination')) {
-            return null;
-        }
-        $base = str_contains($pageUrl, 'simkart912') ? $pageUrl : 'https://tehransim.com/home/simkart912';
-        return page_query_url($base, 'page', $pageIndex + 1);
+        // Category code pages are complete inventories; site page= links do not change listings.
+        return null;
     }
 }

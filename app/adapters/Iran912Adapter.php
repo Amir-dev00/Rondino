@@ -68,9 +68,22 @@ final class Iran912Adapter extends BaseAdapter
 
     public function nextPageUrl(string $html, string $pageUrl, int $pageIndex): ?string
     {
-        if ($pageIndex >= 5 || !str_contains($html, 'spage=')) {
+        if (!str_contains($html, 'spage=')) {
             return null;
         }
-        return page_query_url($pageUrl, 'spage', $pageIndex + 1);
+        $next = $pageIndex + 1;
+        // Only continue when an explicit link to the next spage exists.
+        // Do NOT match generic English "next" in scripts/CSS (caused infinite pages).
+        if (preg_match('/[?&]spage=' . preg_quote((string) $next, '/') . '\b/', $html)
+            || preg_match('/spage=' . preg_quote((string) $next, '/') . '\b/', $html)) {
+            return page_query_url($pageUrl, 'spage', $next);
+        }
+        if (preg_match_all('/[?&]spage=(\d+)/', $html, $m) && $m[1] !== []) {
+            $max = max(array_map('intval', $m[1]));
+            if ($pageIndex < $max) {
+                return page_query_url($pageUrl, 'spage', $next);
+            }
+        }
+        return null;
     }
 }
