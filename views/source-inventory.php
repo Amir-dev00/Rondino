@@ -56,7 +56,6 @@ if ($offers) {
   foreach($ck->fetchAll() as $row) $checks[(int)$row['offer_id']]=$row;
  } catch(Throwable) {}
 }
-$verified = (int)$pdo->prepare("SELECT COUNT(DISTINCT o.id) FROM offers o JOIN offer_contacts c ON c.offer_id=o.id WHERE o.source_id=?")->execute([(int)$source['id']]) ? 0 : 0;
 $verifiedStmt=$pdo->prepare("SELECT COUNT(DISTINCT o.id) FROM offers o JOIN offer_contacts c ON c.offer_id=o.id WHERE o.source_id=?");
 $verifiedStmt->execute([(int)$source['id']]); $verified=(int)$verifiedStmt->fetchColumn();
 $phoneStmt=$pdo->prepare("SELECT COUNT(*) FROM offer_contacts c JOIN offers o ON o.id=c.offer_id WHERE o.source_id=?");
