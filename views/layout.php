@@ -19,6 +19,7 @@ $flash = flash_get();
     <?php if ($user): ?>
     <nav class="nav" aria-label="بخش‌های اصلی">
       <a class="<?= ($active ?? '') === 'market' ? 'active' : '' ?>" href="/?r=market">بازار خطوط</a>
+      <a class="<?= ($active ?? '') === 'contacts' ? 'active' : '' ?>" href="/?r=contacts">دفتر تماس</a>
       <a class="<?= ($active ?? '') === 'estimate' ? 'active' : '' ?>" href="/?r=estimate">تخمین قیمت</a>
       <a class="<?= ($active ?? '') === 'deals' ? 'active' : '' ?>" href="/?r=deals">معاملات تیم</a>
       <a class="<?= ($active ?? '') === 'sources' ? 'active' : '' ?>" href="/?r=sources">وضعیت منابع</a>

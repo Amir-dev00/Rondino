@@ -137,6 +137,8 @@ $view = match ($route) {
     'estimate' => 'estimate.php',
     'deals' => 'deals.php',
     'sources' => 'sources.php',
+    'source' => 'source-inventory.php',
+    'contacts' => 'contacts.php',
     default => 'market.php',
 };
 

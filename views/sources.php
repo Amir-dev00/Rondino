@@ -59,7 +59,8 @@ ob_start();
     ?>
       <tr data-slug="<?= e($s['slug']) ?>" data-interval="<?= (int) $s['refresh_interval_minutes'] ?>" data-success="<?= e($s['last_success_at'] ?? '') ?>">
         <td>
-          <strong><?= e($s['name']) ?></strong>
+          <strong><a href="/?r=source&amp;slug=<?= e($s['slug']) ?>"><?= e($s['name']) ?></a></strong>
+          <div><a class="muted" href="/?r=source&amp;slug=<?= e($s['slug']) ?>">مشاهده موجودی و شماره‌ها ←</a></div>
           <div class="muted" style="overflow-wrap:anywhere"><?= e($s['base_url']) ?></div>
         </td>
         <td class="js-pass-cell">
