@@ -27,19 +27,29 @@ final class Digits
 
     public static function extractSim0912(string $input): ?string
     {
-        if (preg_match('/[xX*ـ_…]|\[\.+\]|\.{2,}/u', $input)) {
-            if (!preg_match('/0912[0-9]{7}/', self::only(self::normalize($input)))) {
+        $normalized = self::normalize($input);
+
+        // Never scan URL hosts (e.g. 0912sim.com + /product/0910… fabricates 09120910…).
+        if (preg_match('#https?://#i', $normalized)) {
+            $parts = parse_url($normalized);
+            $normalized = ((string) ($parts['path'] ?? ''))
+                . (isset($parts['query']) ? ('?' . $parts['query']) : '')
+                . ' '
+                . ((string) ($parts['fragment'] ?? ''));
+        }
+
+        if (preg_match('/[xX*ـ_…]|\[\.+\]|\.{2,}/u', $normalized)) {
+            if (!preg_match('/(?<!\d)0[\s\-._]*9[\s\-._]*1[\s\-._]*2(?:[\s\-._]*\d){7}(?!\d)/u', $normalized)) {
                 return null;
             }
         }
 
-        $normalized = self::normalize($input);
-        $normalized = str_replace(['+', ' '], '', $normalized);
-        $normalized = preg_replace('/^(?:0098|098|98)/', '0', $normalized) ?? $normalized;
-        $digits = self::only($normalized);
-
-        if (preg_match('/0912[0-9]{7}/', $digits, $m)) {
-            return substr($m[0], 0, 11);
+        // Require a contiguous 0912 + 7 digits (separators allowed between digits only).
+        if (preg_match('/(?<!\d)0[\s\-._]*9[\s\-._]*1[\s\-._]*2(?:[\s\-._]*\d){7}(?!\d)/u', $normalized, $m)) {
+            $digits = self::only($m[0]);
+            if (preg_match('/^0912[0-9]{7}$/', $digits)) {
+                return $digits;
+            }
         }
 
         return null;

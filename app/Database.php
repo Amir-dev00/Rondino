@@ -28,8 +28,22 @@ final class Database
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             PDO::ATTR_EMULATE_PREPARES => false,
+            PDO::ATTR_TIMEOUT => 30,
         ]);
+        // Avoid idle disconnects during long crawl waves.
+        try {
+            self::$pdo->exec('SET SESSION wait_timeout=28800');
+            self::$pdo->exec('SET SESSION interactive_timeout=28800');
+        } catch (Throwable) {
+            // Host may forbid SESSION timeout changes; ignore.
+        }
         return self::$pdo;
+    }
+
+    public static function reconnect(): PDO
+    {
+        self::$pdo = null;
+        return self::pdo();
     }
 
     public static function connectServer(string $host, int $port, string $user, string $pass): PDO

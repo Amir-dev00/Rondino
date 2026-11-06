@@ -104,10 +104,16 @@ final class CrawlEngine
                 }
             }
             if ($allDone) {
-                $status = (!$anyOk && $errors !== []) ? 'blocked' : 'completed';
+                $offersFound = (int) ($state['offers_found'] ?? $pass['offers_found'] ?? 0);
+                $pagesFetched = (int) ($state['pages_fetched'] ?? $pass['pages_fetched'] ?? 0);
+                // Verified inventory (done branch or stored offers) must not be wiped by a later page failure.
+                $status = ($anyOk || $offersFound > 0) ? 'completed' : (($errors !== [] || $pagesFetched === 0) ? 'blocked' : 'completed');
+                if ($offersFound === 0 && $pagesFetched === 0 && $errors !== []) {
+                    $status = 'blocked';
+                }
                 $msg = $status === 'blocked' ? 'همه شاخه‌ها ناموفق بودند.' : 'پایان تأییدشدهٔ همه شاخه‌ها.';
-                $pass['offers_found'] = (int) ($state['offers_found'] ?? $pass['offers_found']);
-                $pass['pages_fetched'] = (int) ($state['pages_fetched'] ?? $pass['pages_fetched']);
+                $pass['offers_found'] = $offersFound;
+                $pass['pages_fetched'] = $pagesFetched;
                 $pass['branch_errors'] = $errors === [] ? null : json_encode($errors, JSON_UNESCAPED_UNICODE);
                 $this->persistState($pdo, $pass, $state, $status === 'completed' || $status === 'blocked' ? $status : 'paused', $now, true);
                 $this->touchSummary($pdo, $sourceId, $pass, $errors, $now, $status === 'completed');
@@ -290,8 +296,10 @@ final class CrawlEngine
             }
         }
         if ($finished) {
-            $status = (!$anyOk && $errors !== []) ? 'blocked' : 'completed';
-            if ((int) $pass['pages_fetched'] === 0 && $errors !== []) {
+            $offersFound = (int) $pass['offers_found'];
+            $pagesFetched = (int) $pass['pages_fetched'];
+            $status = ($anyOk || $offersFound > 0) ? 'completed' : 'blocked';
+            if ($offersFound === 0 && $pagesFetched === 0 && $errors !== []) {
                 $status = 'blocked';
             }
             $pass['progress_label'] = $status === 'blocked' ? 'همه شاخه‌ها ناموفق بودند.' : 'پایان تأییدشدهٔ همه شاخه‌ها.';

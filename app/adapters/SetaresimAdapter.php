@@ -10,19 +10,17 @@ final class SetaresimAdapter extends BaseAdapter
 
     public function seedUrls(): array
     {
-        return [
-            'https://setaresim.com/',
-            'https://setaresim.com/sim-card/0912',
-        ];
+        // Disabled in sources.is_enabled; keep seeds empty so accidental runs do nothing.
+        return [];
     }
 
     public function notes(): string
     {
-        return 'بلاکر تأییدشده: تایم‌اوت اتصال از PHP و مرورگر محلی (chrome-error). API/فید عمومی پیدا نشد.';
+        return 'غیرفعال از جمع‌آوری فعال (is_enabled=0). سوابق تاریخی حفظ می‌شود.';
     }
 
     public function parseListPage(string $html, string $pageUrl): array
     {
-        throw new RuntimeException('پارسر ستاره سیم هنوز پیاده سازی نشده؛ دریافت پاسخ HTTP موفق به معنی استخراج موفق نیست.');
+        throw new RuntimeException('setaresim is disabled from active collection.');
     }
 }

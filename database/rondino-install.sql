@@ -179,7 +179,7 @@ INSERT INTO sources (slug, name, base_url, list_url, is_enabled, refresh_interva
 ('cafesimcart', 'cafesimcart.com', 'https://cafesimcart.com', 'https://cafesimcart.com/', 1, 60, 'کارت‌های .simdetail.'),
 ('rond0912', 'rond0912.com', 'http://rond0912.com', 'http://rond0912.com/', 1, 60, 'کارت‌های .simdetail؛ صفحه بزرگ.'),
 ('simkhan', 'simkhan.ir', 'https://simkhan.ir', 'https://simkhan.ir/simcard912', 1, 120, 'لندینگ Next.js؛ شبکه آگهی عمومی تأیید نشده.'),
-('setaresim', 'setaresim.com', 'https://setaresim.com', 'https://setaresim.com/', 1, 120, 'ممکن است تایم‌اوت باشد؛ سلکتور تأییدشده ثبت نشده.'),
+('setaresim', 'setaresim.com', 'https://setaresim.com', 'https://setaresim.com/', 0, 120, 'غیرفعال از جمع‌آوری فعال؛ سوابق تاریخی در صورت وجود حفظ می‌شود.'),
 ('jamsimkart', 'jamsimkart.com', 'https://www.jamsimkart.com', 'https://www.jamsimkart.com/mci/daemi/simcard-pricing', 1, 60, 'کارت‌های .vitrin-item.'),
 ('rondbaz', 'rondbaz.com', 'https://www.rondbaz.com', 'https://www.rondbaz.com/mci/?cell_box_1_4=0912', 1, 60, 'پارسر کارت‌های .vitrin-sim-card آماده است؛ در ممیزی فعلی مبدأ HTTP 404 برمی‌گرداند.'),
 ('sim0912', '0912sim.com', 'https://0912sim.com', 'https://0912sim.com/shop/', 1, 60, 'ووکامرس Woodmart؛ دسته code0 تا code9.');

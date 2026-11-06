@@ -46,8 +46,17 @@ if not defined PORT (
 
 echo سرور محلی روی http://127.0.0.1:%PORT%
 echo کارگر خزش محلی در پس‌زمینه اجرا می‌شود (بدون ترمینال جدا).
-echo خزش فعلی فقط با PHP است؛ مرورگر خودکار برای منابع فعال لازم نیست.
-echo منابع مسدود (rondbaz / setaresim / rond.ir) روی cPanel هم در دسترس نیستند.
+echo setaresim از جمع‌آوری فعال خارج است.
+echo rond.ir در صورت نصب Node+Playwright از helper محلی استفاده می‌کند (cPanel معمولاً ندارد).
+where node >nul 2>&1
+if errorlevel 1 (
+  echo [راهنما] برای rond.ir اختیاری: Node.js را نصب کنید سپس:
+  echo   cd scripts ^&^& npm install playwright ^&^& npx playwright install chromium
+) else (
+  if not exist "%ROOT%scripts\node_modules\playwright" (
+    echo [راهنما] برای فعال‌سازی helper رند: cd scripts ^&^& npm install playwright ^&^& npx playwright install chromium
+  )
+)
 echo برای توقف، Ctrl+C را بزنید.
 echo.
 

@@ -46,7 +46,8 @@ final class Price
             $hasFullPriceCue = true;
         }
 
-        if (!preg_match('/(\d{1,3}(?:[,\s]\d{3})+|\d{6,})/', $amountSource, $m)) {
+        // Accept 130,000,000 and Iranian/EU thousand dots: 130.000.000 (not decimals like 3.5).
+        if (!preg_match('/(\d{1,3}(?:[,\s]\d{3})+|\d{1,3}(?:\.\d{3}){1,}|\d{6,})/', $amountSource, $m)) {
             if ($isInstallmentContext) {
                 return ['amount' => null, 'type' => 'installment', 'raw' => $raw, 'unit' => $unit];
             }
