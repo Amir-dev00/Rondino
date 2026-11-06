@@ -256,32 +256,64 @@ final class RondContacts
         int $priorAttempts,
         ?string $error
     ): void {
+        self::persistBatch($pdo, [[
+            'offer_id' => $offerId,
+            'status' => $status,
+            'phones' => $phones,
+            'prior_attempts' => $priorAttempts,
+            'error' => $error,
+        ]]);
+    }
+
+    /**
+     * Transactional bulk upsert for a batch of contact results. Never deletes existing phones.
+     *
+     * @param list<array{offer_id:int,status:string,phones:list<string>,prior_attempts:int,error:?string}> $items
+     */
+    public static function persistBatch(PDO $pdo, array $items): void
+    {
+        if ($items === []) {
+            return;
+        }
         self::ensureSchema($pdo);
-        $attempt = $priorAttempts + 1;
-        $retry = gmdate('Y-m-d H:i:s', time() + ($status === 'unresolved' ? 86400 : min(3600, 30 * 2 ** $attempt)));
+        $insertPhone = $pdo->prepare(
+            "INSERT INTO offer_contacts (offer_id,phone,phone_type,scope,label)
+             VALUES (?,?,?,'seller','فروشنده') ON DUPLICATE KEY UPDATE scope='seller'"
+        );
+        $upsertCheck = $pdo->prepare(
+            "INSERT INTO rond_contact_checks (offer_id,status,attempts,checked_at,retry_at,error)
+             VALUES (?,?,?,UTC_TIMESTAMP(),?,?) ON DUPLICATE KEY UPDATE status=VALUES(status),
+             attempts=VALUES(attempts),checked_at=VALUES(checked_at),retry_at=VALUES(retry_at),error=VALUES(error)"
+        );
         $pdo->beginTransaction();
         try {
-            $insert = $pdo->prepare(
-                "INSERT INTO offer_contacts (offer_id,phone,phone_type,scope,label)
-                 VALUES (?,?,?,'seller','فروشنده') ON DUPLICATE KEY UPDATE scope='seller'"
-            );
-            foreach ($phones as $phone) {
-                if (!is_string($phone) || $phone === '') {
-                    continue;
+            foreach ($items as $item) {
+                $offerId = (int) $item['offer_id'];
+                $status = (string) $item['status'];
+                $attempt = (int) $item['prior_attempts'] + 1;
+                $error = $item['error'] ?? null;
+                $retry = gmdate(
+                    'Y-m-d H:i:s',
+                    time() + ($status === 'unresolved' ? 86400 : min(3600, 30 * (2 ** $attempt)))
+                );
+                foreach ($item['phones'] ?? [] as $phone) {
+                    if (!is_string($phone) || $phone === '') {
+                        continue;
+                    }
+                    $insertPhone->execute([
+                        $offerId,
+                        $phone,
+                        str_starts_with($phone, '09') ? 'mobile' : 'landline',
+                    ]);
                 }
-                $insert->execute([$offerId, $phone, str_starts_with($phone, '09') ? 'mobile' : 'landline']);
+                $upsertCheck->execute([
+                    $offerId,
+                    $status,
+                    $attempt,
+                    $retry,
+                    $error !== null ? mb_substr((string) $error, 0, 500) : null,
+                ]);
             }
-            $pdo->prepare(
-                "INSERT INTO rond_contact_checks (offer_id,status,attempts,checked_at,retry_at,error)
-                 VALUES (?,?,?,UTC_TIMESTAMP(),?,?) ON DUPLICATE KEY UPDATE status=VALUES(status),
-                 attempts=VALUES(attempts),checked_at=VALUES(checked_at),retry_at=VALUES(retry_at),error=VALUES(error)"
-            )->execute([
-                $offerId,
-                $status,
-                $attempt,
-                $retry,
-                $error !== null ? mb_substr($error, 0, 500) : null,
-            ]);
             $pdo->commit();
         } catch (Throwable $e) {
             $pdo->rollBack();
