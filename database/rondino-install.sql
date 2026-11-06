@@ -69,6 +69,7 @@ CREATE TABLE offers (
   KEY idx_offers_condition (condition_normalized),
   KEY idx_offers_availability (availability),
   KEY idx_offers_city (city),
+  KEY idx_offers_source_last_seen (source_id, last_seen_at),
   CONSTRAINT fk_offers_source FOREIGN KEY (source_id) REFERENCES sources (id),
   CONSTRAINT fk_offers_sim FOREIGN KEY (sim_number_id) REFERENCES sim_numbers (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -167,6 +168,27 @@ CREATE TABLE crawl_jobs (
   finished_at DATETIME NULL,
   PRIMARY KEY (id),
   KEY idx_crawl_jobs_status (status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE source_sync_state (
+  source_id SMALLINT UNSIGNED NOT NULL,
+  mode_last VARCHAR(32) NOT NULL DEFAULT 'full',
+  last_full_completed_at DATETIME NULL,
+  last_incremental_completed_at DATETIME NULL,
+  last_success_at DATETIME NULL,
+  last_started_at DATETIME NULL,
+  last_external_id VARCHAR(120) NULL,
+  last_page_index INT UNSIGNED NOT NULL DEFAULT 0,
+  last_total_pages INT UNSIGNED NULL,
+  last_total_elements INT UNSIGNED NULL,
+  overlap_pages INT UNSIGNED NOT NULL DEFAULT 3,
+  incremental_max_pages INT UNSIGNED NOT NULL DEFAULT 50,
+  full_reconcile_every_hours INT UNSIGNED NOT NULL DEFAULT 168,
+  consecutive_known_pages INT UNSIGNED NOT NULL DEFAULT 0,
+  stats_json TEXT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (source_id),
+  CONSTRAINT fk_source_sync_source FOREIGN KEY (source_id) REFERENCES sources (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT INTO sources (slug, name, base_url, list_url, is_enabled, refresh_interval_minutes, notes) VALUES

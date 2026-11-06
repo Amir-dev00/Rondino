@@ -11,10 +11,12 @@ final class CrawlEngine
     /**
      * Advance one or more ready branches for a source (up to $maxFetches concurrent).
      *
+     * @param 'full'|'incremental' $mode Ignored when resuming an in-progress pass (state wins).
      * @return array<string,mixed>
      */
-    public function advanceSource(string $slug, bool $restart = false, int $maxFetches = 0): array
+    public function advanceSource(string $slug, bool $restart = false, int $maxFetches = 0, string $mode = 'full'): array
     {
+        $mode = $mode === 'incremental' ? 'incremental' : 'full';
         $adapter = Registry::get($slug);
         if (!$adapter) {
             return ['ok' => false, 'message' => 'منبع یافت نشد.', 'slug' => $slug];
@@ -76,11 +78,25 @@ final class CrawlEngine
             return ['ok' => false, 'slug' => $slug, 'pass_status' => 'blocked', 'message' => 'بدون seed', 'progress' => $crawler->progressSnapshot($slug)];
         }
 
-        $state = $this->decodeState($pass['branch_state'] ?? null, $seeds);
+        $state = $this->decodeState($pass['branch_state'] ?? null, $seeds, (int) ($pass['id'] ?? 0));
         if ($restart && method_exists($adapter, 'clearPrefetch')) $adapter->clearPrefetch();
         if ($restart || empty($pass['branch_state'])) {
             $state = $this->freshState($seeds);
+            $state['crawl_mode'] = $mode;
+            $sync = SourceSync::load($pdo, $sourceId);
+            $state['incremental_overlap_pages'] = max(1, (int) ($sync['overlap_pages'] ?? config('rondino_incremental_overlap_pages', 3)));
+            $state['incremental_max_pages'] = max(
+                (int) $state['incremental_overlap_pages'],
+                (int) ($sync['incremental_max_pages'] ?? config('rondino_incremental_max_pages', 50))
+            );
+            $state['consecutive_known_pages'] = 0;
+            $state['incremental_inserted'] = 0;
+            $state['incremental_updated'] = 0;
+            $state['incremental_unchanged'] = 0;
+            SourceSync::markStarted($pdo, $sourceId, $mode);
         }
+        $crawlMode = (($state['crawl_mode'] ?? $mode) === 'incremental') ? 'incremental' : 'full';
+        $state['crawl_mode'] = $crawlMode;
 
         foreach ($state['branches'] as &$branch) {
             if (($branch['status'] ?? '') === 'retry' && (int) ($branch['retry_at'] ?? 0) <= time()) {
@@ -128,6 +144,16 @@ final class CrawlEngine
                 $status = $errors !== [] ? ($offersFound > 0 ? 'partial' : 'blocked') : ($anyOk ? 'completed' : 'blocked');
                 if ($offersFound === 0 && $pagesFetched === 0 && $errors !== []) {
                     $status = 'blocked';
+                }
+                $totalPagesKnown = (int) ($state['source_total_pages'] ?? 0);
+                if (
+                    $status === 'completed'
+                    && !empty($state['coverage']['is_complete_inventory'])
+                    && $totalPagesKnown > 1
+                    && $pagesFetched < $totalPagesKnown
+                ) {
+                    $status = 'partial';
+                    $state['stop_reason'] = 'incomplete_inventory_pages';
                 }
                 $msg = $status === 'completed' ? 'پایان همه شاخه‌ها' : 'گذر ناقص یا ناموفق است';
                 $pass['offers_found'] = $offersFound;
@@ -322,6 +348,9 @@ final class CrawlEngine
             $state['offers_found'] = (int) ($state['offers_found'] ?? 0) + $found;
             $state['pages_fetched'] = (int) ($state['pages_fetched'] ?? 0) + 1;
             $state['source_records'] = (int) ($state['source_records'] ?? 0) + $sourceCount;
+            $state['incremental_inserted'] = (int) ($state['incremental_inserted'] ?? 0) + (int) ($result['inserted'] ?? 0);
+            $state['incremental_updated'] = (int) ($state['incremental_updated'] ?? 0) + (int) ($result['updated'] ?? 0);
+            $state['incremental_unchanged'] = (int) ($state['incremental_unchanged'] ?? 0) + (int) ($result['unchanged'] ?? 0);
             $state['seen_urls'][$url] = true;
             if ($page === 1) {
                 $state['branches'][$i]['seed_fp'] = $fp;
@@ -329,17 +358,78 @@ final class CrawlEngine
             $state['branches'][$i]['last_fp'] = $fp;
             $state['branches'][$i]['retried'] = false;
 
+            // Incremental early-stop: API list rows omit update millis; rely on sort order
+            // (newest updates first within special-type) + overlap of already-known IDs.
+            $newBefore = (int) ($result['new_before'] ?? 0);
+            if ($crawlMode === 'incremental' && $found > 0 && $newBefore === 0) {
+                $state['consecutive_known_pages'] = (int) ($state['consecutive_known_pages'] ?? 0) + 1;
+            } elseif ($crawlMode === 'incremental') {
+                $state['consecutive_known_pages'] = 0;
+            }
+            $overlapNeed = max(1, (int) ($state['incremental_overlap_pages'] ?? 3));
+            $maxIncPages = max($overlapNeed, (int) ($state['incremental_max_pages'] ?? 50));
+            $hitOverlap = $crawlMode === 'incremental'
+                && (int) ($state['consecutive_known_pages'] ?? 0) >= $overlapNeed;
+            $hitCap = $crawlMode === 'incremental'
+                && (int) ($state['pages_fetched'] ?? 0) >= $maxIncPages;
+            if ($hitOverlap || $hitCap) {
+                $state['branches'][$i]['status'] = 'done';
+                $state['branches'][$i]['error'] = null;
+                $state['branches'][$i]['url'] = null;
+                $state['branches'][$i]['stop_reason'] = $hitOverlap
+                    ? 'incremental_overlap_reached'
+                    : 'incremental_page_cap';
+                // Must not claim full inventory when stopping early.
+                $state['coverage'] = is_array($state['coverage'] ?? null) ? $state['coverage'] : [];
+                $state['coverage']['is_complete_inventory'] = false;
+                $state['coverage']['scope'] = 'incremental_overlap';
+                $state['coverage']['label'] = $hitOverlap
+                    ? 'Incremental overlap reached (known external_id pages)'
+                    : 'Incremental page cap reached — run --full to reconcile';
+                $next = null; // force finish path below
+            }
+
             // Advance whenever verified pagination says so — even if this page had
             // source rows but zero matching 0912 offers.
             $noProgress = $next === null || $next === '' || $next === $url || isset($state['seen_urls'][$next]);
             if ($noProgress) {
-                $loop = $next !== null && $next !== '';
-                $state['branches'][$i]['status'] = $loop ? 'failed' : 'done';
-                $state['branches'][$i]['error'] = $loop ? 'Pagination loop before verified end' : null;
-                $state['branches'][$i]['url'] = $loop ? $url : null;
-                $state['branches'][$i]['stop_reason'] = ($next === null || $next === '' || $next === $url)
-                    ? 'pagination_exhausted'
-                    : 'duplicate_next_url';
+                $loop = $next !== null && $next !== '' && $next !== $url;
+                $dup = $next !== null && $next !== '' && isset($state['seen_urls'][$next]);
+                $totalPagesKnown = (int) ($state['source_total_pages'] ?? 0);
+                // 1-based crawl page maps to 0-based API page (page-1). Premature end if more pages remain.
+                $apiPageDone = max(0, $page - 1);
+                $premature = !$loop && !$dup
+                    && !empty($state['coverage']['is_complete_inventory'])
+                    && $totalPagesKnown > 1
+                    && ($apiPageDone + 1) < $totalPagesKnown;
+                if ($premature) {
+                    $attempts = (int) ($state['branches'][$i]['attempts'] ?? 0) + 1;
+                    $state['branches'][$i]['attempts'] = $attempts;
+                    $state['branches'][$i]['status'] = $attempts >= 5 ? 'failed' : 'retry';
+                    $state['branches'][$i]['retry_at'] = time() + min(300, 10 * $attempts);
+                    $state['branches'][$i]['error'] = sprintf(
+                        'Premature pagination end at API page %d before source totalPages=%d',
+                        $apiPageDone,
+                        $totalPagesKnown
+                    );
+                    $state['branches'][$i]['url'] = $url;
+                    $state['branches'][$i]['stop_reason'] = 'premature_pagination_end';
+                    $errors[] = $state['branches'][$i]['error'];
+                } elseif ($loop || $dup) {
+                    $state['branches'][$i]['status'] = 'failed';
+                    $state['branches'][$i]['error'] = $dup ? 'Pagination loop before verified end' : 'Pagination loop before verified end';
+                    $state['branches'][$i]['url'] = $url;
+                    $state['branches'][$i]['stop_reason'] = 'duplicate_next_url';
+                    $errors[] = $state['branches'][$i]['error'];
+                } else {
+                    if (($state['branches'][$i]['status'] ?? '') !== 'done') {
+                        $state['branches'][$i]['status'] = 'done';
+                        $state['branches'][$i]['error'] = null;
+                        $state['branches'][$i]['url'] = null;
+                        $state['branches'][$i]['stop_reason'] = $state['branches'][$i]['stop_reason']
+                            ?? 'pagination_exhausted';
+                    }
+                }
             } else {
                 $state['branches'][$i]['status'] = 'active';
                 $state['branches'][$i]['page'] = $page + 1;
@@ -424,6 +514,18 @@ final class CrawlEngine
             $covBit = $isCompleteInventory
                 ? 'مسیر موجودی لیست API'
                 : ($coverageScope === 'homepage_or_html_sample' ? 'نمونه صفحه اصلی (ناقص)' : 'پوشش نامشخص');
+            // Never claim full inventory completion when source still reports many unread pages.
+            if (
+                $status === 'completed'
+                && $isCompleteInventory
+                && $totalPages > 1
+                && $pagesFetched > 0
+                && $pagesFetched < $totalPages
+            ) {
+                $status = 'partial';
+                $state['stop_reason'] = 'incomplete_inventory_pages';
+                $gap = sprintf(' · فاصله پوشش صفحات %d/%d', $pagesFetched, $totalPages);
+            }
             if ($status === 'blocked') {
                 $pass['progress_label'] = 'توقف: همه شاخه‌ها ناموفق · ' . $covBit;
                 $state['stop_reason'] = 'all_branches_failed';
@@ -441,6 +543,32 @@ final class CrawlEngine
             // Never mark older offers sold/removed just because a sample homepage rotated.
             $this->persistState($pdo, $pass, $state, $status, $now, true);
             $this->touchSummary($pdo, $sourceId, $pass, $errors, $now, $status === 'completed');
+            if ($status === 'completed') {
+                $lastExt = null;
+                if (!empty($state['seen_external_ids']) && is_array($state['seen_external_ids'])) {
+                    $keys = array_keys($state['seen_external_ids']);
+                    $lastExt = $keys !== [] ? (string) end($keys) : null;
+                    if ($lastExt === '_sidecar') {
+                        $lastExt = null;
+                    }
+                }
+                SourceSync::markCompleted(
+                    $pdo,
+                    $sourceId,
+                    $crawlMode,
+                    (int) ($state['pages_fetched'] ?? 0),
+                    $lastExt,
+                    $totalPages > 0 ? $totalPages : null,
+                    $totalElements > 0 ? $totalElements : null,
+                    [
+                        'inserted' => (int) ($state['incremental_inserted'] ?? 0),
+                        'updated' => (int) ($state['incremental_updated'] ?? 0),
+                        'unchanged' => (int) ($state['incremental_unchanged'] ?? 0),
+                        'unique_offers' => $uniqueOffers,
+                        'stop_reason' => $state['stop_reason'] ?? null,
+                    ]
+                );
+            }
             $passStatus = $status;
         } else {
             $this->persistState($pdo, $pass, $state, 'paused', $now, false);
@@ -522,15 +650,96 @@ final class CrawlEngine
     }
 
     /** @param list<string> $seeds */
-    private function decodeState(mixed $raw, array $seeds): array
+    private function decodeState(mixed $raw, array $seeds, int $passId = 0): array
     {
         if (is_string($raw) && $raw !== '') {
             $decoded = json_decode($raw, true);
             if (is_array($decoded) && isset($decoded['branches']) && is_array($decoded['branches'])) {
-                return $decoded;
+                return $this->mergeSeenSidecar($decoded, $passId);
             }
         }
         return $this->freshState($seeds);
+    }
+
+    /** Absolute path for large seen_* maps spilled out of branch_state JSON. */
+    private function seenSidecarPath(int $passId): string
+    {
+        $dir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'cache';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0775, true);
+        }
+        return $dir . DIRECTORY_SEPARATOR . 'crawl-pass-' . max(0, $passId) . '-seen.json';
+    }
+
+    /**
+     * Keep crawl_passes.branch_state under MySQL max_allowed_packet by spilling
+     * growing uniqueness maps to a sidecar file.
+     *
+     * @param array<string,mixed> $state
+     * @return array<string,mixed>
+     */
+    private function spillSeenSets(array $state, int $passId): array
+    {
+        if ($passId <= 0) {
+            return $state;
+        }
+        $external = is_array($state['seen_external_ids'] ?? null) ? $state['seen_external_ids'] : [];
+        $sims = is_array($state['seen_sim_numbers'] ?? null) ? $state['seen_sim_numbers'] : [];
+        // Already compacted marker from a prior persist.
+        if (($external['_sidecar'] ?? false) === true || ($sims['_sidecar'] ?? false) === true) {
+            return $state;
+        }
+        if ($external === [] && $sims === []) {
+            return $state;
+        }
+        $path = $this->seenSidecarPath($passId);
+        $payload = [
+            'seen_external_ids' => $external,
+            'seen_sim_numbers' => $sims,
+            'unique_offers' => (int) ($state['unique_offers'] ?? count($external)),
+            'updated_at' => gmdate('c'),
+        ];
+        $json = json_encode($payload, JSON_UNESCAPED_UNICODE);
+        if ($json === false || @file_put_contents($path, $json) === false) {
+            // Fall back to inline maps (may still hit packet limit).
+            return $state;
+        }
+        $state['seen_external_ids'] = ['_sidecar' => true, 'count' => count($external)];
+        $state['seen_sim_numbers'] = ['_sidecar' => true, 'count' => count($sims)];
+        $state['seen_sets_sidecar'] = basename($path);
+        return $state;
+    }
+
+    /**
+     * @param array<string,mixed> $state
+     * @return array<string,mixed>
+     */
+    private function mergeSeenSidecar(array $state, int $passId): array
+    {
+        $path = $this->seenSidecarPath($passId);
+        if (!is_file($path)) {
+            return $state;
+        }
+        $payload = json_decode((string) file_get_contents($path), true);
+        if (!is_array($payload)) {
+            return $state;
+        }
+        $inlineExt = is_array($state['seen_external_ids'] ?? null) ? $state['seen_external_ids'] : [];
+        $inlineSim = is_array($state['seen_sim_numbers'] ?? null) ? $state['seen_sim_numbers'] : [];
+        $fileExt = is_array($payload['seen_external_ids'] ?? null) ? $payload['seen_external_ids'] : [];
+        $fileSim = is_array($payload['seen_sim_numbers'] ?? null) ? $payload['seen_sim_numbers'] : [];
+        // Prefer sidecar contents when inline is a compact marker or smaller.
+        if (($inlineExt['_sidecar'] ?? false) === true || count($fileExt) >= count($inlineExt)) {
+            $state['seen_external_ids'] = $fileExt;
+        } else {
+            $state['seen_external_ids'] = $inlineExt + $fileExt;
+        }
+        if (($inlineSim['_sidecar'] ?? false) === true || count($fileSim) >= count($inlineSim)) {
+            $state['seen_sim_numbers'] = $fileSim;
+        } else {
+            $state['seen_sim_numbers'] = $inlineSim + $fileSim;
+        }
+        return $state;
     }
 
     /** @param array<string,mixed> $state */
@@ -551,8 +760,12 @@ final class CrawlEngine
      */
     private function persistState(PDO $pdo, array &$pass, array $state, string $status, string $now, bool $finished): void
     {
+        $passId = (int) ($pass['id'] ?? 0);
+        // Spill before encode so in-memory $state used later in this request stays full;
+        // only the DB payload is compacted.
+        $dbState = $this->spillSeenSets($state, $passId);
         $pass['status'] = $status;
-        $pass['branch_state'] = json_encode($state, JSON_UNESCAPED_UNICODE);
+        $pass['branch_state'] = json_encode($dbState, JSON_UNESCAPED_UNICODE);
         $pdo->prepare(
             'UPDATE crawl_passes SET status=?, seed_index=?, page_index=?, current_url=?, offers_found=?, pages_fetched=?,
              last_batch_offers=?, last_batch_at=?, progress_label=?, branch_errors=?, last_error=?, branch_state=?,
@@ -576,7 +789,7 @@ final class CrawlEngine
             $finished ? $now : null,
             $finished ? 1 : 0,
             $finished ? 1 : 0,
-            (int) $pass['id'],
+            $passId,
         ]);
     }
 
@@ -588,12 +801,18 @@ final class CrawlEngine
             $stmt = $pdo->prepare('SELECT * FROM crawl_passes WHERE source_id = ? FOR UPDATE');
             $stmt->execute([$sourceId]);
             $pass = $stmt->fetch();
+            // Expired leases must not block resume (browser waves can outlive a crashed holder).
             if ($pass && $pass['locked_until'] && $pass['locked_until'] > $now && $pass['lock_token']) {
                 $pdo->commit();
                 return null;
             }
+            if ($pass && $pass['lock_token'] && (!$pass['locked_until'] || $pass['locked_until'] <= $now)) {
+                $pdo->prepare('UPDATE crawl_passes SET lock_token=NULL, locked_until=NULL WHERE id=?')
+                    ->execute([(int) $pass['id']]);
+            }
             $token = bin2hex(random_bytes(8));
-            $lockUntil = gmdate('Y-m-d H:i:s', time() + 180);
+            // Long enough for one Playwright API batch (~2–3 min), short enough to recover.
+            $lockUntil = gmdate('Y-m-d H:i:s', time() + 300);
             $seeds = $adapter->seedUrls();
             $first = $seeds[0] ?? null;
             $fresh = json_encode($this->freshState($seeds), JSON_UNESCAPED_UNICODE);

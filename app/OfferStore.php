@@ -15,7 +15,15 @@ final class OfferStore
 
     /**
      * @param list<array<string,mixed>> $listings
-     * @return array{upserted:int, skipped:int}
+     * @return array{
+     *   upserted:int,
+     *   skipped:int,
+     *   inserted:int,
+     *   updated:int,
+     *   unchanged:int,
+     *   known_before:int,
+     *   new_before:int
+     * }
      */
     public function upsertMany(int $sourceId, array $listings): array
     {
@@ -32,7 +40,15 @@ final class OfferStore
         }
         if ($valid === []) {
             CrawlMetrics::$storeMs += (microtime(true) - $t0) * 1000;
-            return ['upserted' => 0, 'skipped' => $skipped];
+            return [
+                'upserted' => 0,
+                'skipped' => $skipped,
+                'inserted' => 0,
+                'updated' => 0,
+                'unchanged' => 0,
+                'known_before' => 0,
+                'new_before' => 0,
+            ];
         }
 
         $pdo = Database::pdo();
@@ -50,6 +66,11 @@ final class OfferStore
                 ? $this->loadExistingBySim($pdo, $sourceId, array_values($simIds)) : [];
 
             $upserted = 0;
+            $inserted = 0;
+            $updated = 0;
+            $unchanged = 0;
+            $knownBefore = 0;
+            $newBefore = 0;
             $now = now_dt();
             foreach ($valid as $listing) {
                 $externalId = (string) $listing['external_id'];
@@ -65,13 +86,33 @@ final class OfferStore
                 } elseif ($existing === null) {
                     $existing = $bySimRow;
                 }
-                $this->upsertPrepared($pdo, $sourceId, $simId, $listing, $existing, $now);
+                if ($existing) {
+                    $knownBefore++;
+                } else {
+                    $newBefore++;
+                }
+                $outcome = $this->upsertPrepared($pdo, $sourceId, $simId, $listing, $existing, $now);
+                if ($outcome === 'inserted') {
+                    $inserted++;
+                } elseif ($outcome === 'updated') {
+                    $updated++;
+                } else {
+                    $unchanged++;
+                }
                 $upserted++;
             }
             $pdo->commit();
             CrawlMetrics::$sqlStatements += 1; // commit counted loosely; statements tracked in helpers
             CrawlMetrics::$storeMs += (microtime(true) - $t0) * 1000;
-            return compact('upserted', 'skipped');
+            return [
+                'upserted' => $upserted,
+                'skipped' => $skipped,
+                'inserted' => $inserted,
+                'updated' => $updated,
+                'unchanged' => $unchanged,
+                'known_before' => $knownBefore,
+                'new_before' => $newBefore,
+            ];
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
@@ -163,7 +204,8 @@ final class OfferStore
         $placeholders = implode(',', array_fill(0, count($externalIds), '?'));
         $params = array_merge([$sourceId], $externalIds);
         $stmt = $pdo->prepare(
-            "SELECT id, external_id, price_amount, price_type FROM offers WHERE source_id = ? AND external_id IN ($placeholders)"
+            "SELECT id, external_id, price_amount, price_type, condition_normalized, availability, seller_key, canonical_url
+             FROM offers WHERE source_id = ? AND external_id IN ($placeholders)"
         );
         $stmt->execute($params);
         CrawlMetrics::$sqlStatements++;
@@ -200,8 +242,11 @@ final class OfferStore
         return $map;
     }
 
-    /** @param array<string,mixed> $listing */
-    private function upsertPrepared(PDO $pdo, int $sourceId, int $simId, array $listing, ?array $existing, string $now): void
+    /**
+     * @param array<string,mixed> $listing
+     * @return 'inserted'|'updated'|'unchanged'
+     */
+    private function upsertPrepared(PDO $pdo, int $sourceId, int $simId, array $listing, ?array $existing, string $now): string
     {
         $priceAmount = $listing['price_amount'] ?? null;
         $priceType = (string) ($listing['price_type'] ?? 'unknown');
@@ -220,6 +265,22 @@ final class OfferStore
             }
             $priceChanged = ((string) ($existing['price_amount'] ?? '') !== (string) ($priceAmount ?? ''))
                 || ((string) $existing['price_type'] !== $priceType);
+            $fieldsChanged = $priceChanged
+                || ((string) ($existing['condition_normalized'] ?? '') !== $condNorm)
+                || ((string) ($existing['availability'] ?? '') !== $availability)
+                || ((string) ($existing['seller_key'] ?? '') !== (string) ($listing['seller_key'] ?? ''))
+                || ((string) ($existing['canonical_url'] ?? '') !== (string) $listing['canonical_url']);
+
+            $offerId = (int) $existing['id'];
+            if (!$fieldsChanged) {
+                // Touch seen timestamps only — no price observation, no full row rewrite.
+                $pdo->prepare('UPDATE offers SET last_seen_at=?, last_checked_at=? WHERE id=?')
+                    ->execute([$now, $now, $offerId]);
+                CrawlMetrics::$sqlStatements++;
+                $this->syncContactsPrepared($offerId, $listing['contacts'] ?? [], (string) $listing['sim_number']);
+                return 'unchanged';
+            }
+
             $this->updOffer->execute([
                 $newExternal,
                 $simId,
@@ -235,39 +296,41 @@ final class OfferStore
                 $availability === 'sold' ? 'sold' : 'available',
                 $now,
                 $now,
-                (int) $existing['id'],
+                $offerId,
             ]);
             CrawlMetrics::$sqlStatements++;
-            $offerId = (int) $existing['id'];
-            if ($priceChanged && $priceAmount !== null) {
+            if ($priceChanged) {
                 $this->recordPricePrepared($offerId, $priceAmount, $priceRaw, $priceType, $now);
             }
-        } else {
-            $this->insOffer->execute([
-                $sourceId,
-                $simId,
-                (string) $listing['external_id'],
-                (string) $listing['canonical_url'],
-                $priceAmount,
-                $priceRaw,
-                $priceType,
-                $listing['condition_raw'] ?? null,
-                $condNorm,
-                $listing['city'] ?? null,
-                $listing['city_raw'] ?? null,
-                $listing['seller_key'] ?? null,
-                $availability,
-                $now,
-                $now,
-                $now,
-            ]);
-            CrawlMetrics::$sqlStatements++;
-            $offerId = (int) $pdo->lastInsertId();
-            if ($priceAmount !== null || $priceRaw) {
-                $this->recordPricePrepared($offerId, $priceAmount, $priceRaw, $priceType, $now);
-            }
+            $this->syncContactsPrepared($offerId, $listing['contacts'] ?? [], (string) $listing['sim_number']);
+            return 'updated';
+        }
+
+        $this->insOffer->execute([
+            $sourceId,
+            $simId,
+            (string) $listing['external_id'],
+            (string) $listing['canonical_url'],
+            $priceAmount,
+            $priceRaw,
+            $priceType,
+            $listing['condition_raw'] ?? null,
+            $condNorm,
+            $listing['city'] ?? null,
+            $listing['city_raw'] ?? null,
+            $listing['seller_key'] ?? null,
+            $availability,
+            $now,
+            $now,
+            $now,
+        ]);
+        CrawlMetrics::$sqlStatements++;
+        $offerId = (int) $pdo->lastInsertId();
+        if ($priceAmount !== null || $priceRaw) {
+            $this->recordPricePrepared($offerId, $priceAmount, $priceRaw, $priceType, $now);
         }
         $this->syncContactsPrepared($offerId, $listing['contacts'] ?? [], (string) $listing['sim_number']);
+        return 'inserted';
     }
 
     private function recordPricePrepared(int $offerId, ?int $amount, ?string $raw, string $type, string $now): void

@@ -5,11 +5,31 @@ Use PHP, MySQL and the existing optional Playwright installation. This browser r
 From the project directory, in Windows cmd:
 
 ```bat
-set RONDINO_BROWSER_PROXY=socks5://127.0.0.1:10808
+start-rond-crawl.bat
+```
+
+Or:
+
+```bat
+php scripts/crawl-rond.php --incremental
+php scripts/crawl-rond.php --full
+php scripts/crawl-rond.php --restart
+php scripts/crawl-rond.php --retry-failed
 php scripts/crawl-rond.php --contacts
 ```
 
-The proxy is an example from the user's working machine, not a hardcoded requirement. Configure the actual available proxy. By default the command resumes the stored cursor; `--restart` explicitly starts a new pass. `--retry-failed` reopens exhausted failed branches without resetting completed pages. Ctrl+C stops the CLI; the database checkpoint survives. After an abrupt process stop, the stored lease may take up to three minutes to expire.
+### Full vs incremental
+
+| Mode | CLI | Behavior |
+|------|-----|----------|
+| **Incremental** (default after a verified full inventory) | `--incremental` or no flags when idle | Fetches newest API pages (sort: `advertSpecialType`, `lastUpdateDateMillis`, `createDateMillis`). Upserts new/changed rows. Stops after `rondino_incremental_overlap_pages` consecutive pages whose `external_id` values were **all already in the DB**. Caps at `rondino_incremental_max_pages`. |
+| **Full reconcile** | `--full` or `--restart` | Traverses all inventory pages. Required periodically (`rondino_full_reconcile_every_hours`, default 168). |
+
+**Verified API limitation:** list JSON rows do **not** include `lastUpdateDateMillis` / `createDateMillis` fields (only the sort clause references them). There is no confirmed `updatedSince` body filter. Therefore incremental early-stop uses **known-`external_id` overlap**, not a server-side date watermark. Price/status changes are applied for every listing that appears in the scanned prefix (recent updates surface toward the front of the sort). Deep catalog changes that never re-sort into the scanned window require `--full`.
+
+Sync metadata lives in `source_sync_state` (see `database/rondino-upgrade-source-sync.sql`). Deduplication key remains `(source_id, external_id)`. Price history uses `price_observations` only when price amount/type changes.
+
+Set `rondino_browser_proxy` in `config/local.php` (example: `socks5://127.0.0.1:10808`) or export `RONDINO_BROWSER_PROXY`. By default an in-progress pass is resumed; `--retry-failed` reopens failed branches without wiping successful pages. Ctrl+C stops the CLI; the MySQL checkpoint survives.
 
 The existing start.bat worker also drains paused inventory passes. An optional `rond_enrich_contacts => 1` in config/local.php lets that worker drain contacts when inventory is idle. The dedicated command processes contacts when inventory traversal completes. No worker is installed as a system service.
 
@@ -23,6 +43,6 @@ Contact enrichment is intentionally conservative. It accepts seller telephone da
 
 ## Validation
 
-`node scripts/test-browser-fetch-unit.mjs`, `php scripts/test-rond-ir.php`, `php scripts/test-jalali.php` and `scripts/test-crawl-resume.php` cover parsing and MySQL resume/identity behavior. The MySQL test refuses a nonempty database and requires an explicitly supplied *_test database. GitHub Actions runs these checks without reaching source sites or using production secrets.
+`node scripts/test-browser-fetch-unit.mjs`, `php scripts/test-rond-ir.php`, `php scripts/test-jalali.php`, `scripts/test-crawl-resume.php` and `scripts/test-incremental-crawl.php` cover parsing, resume/identity, and incremental overlap/price/resume behavior. The MySQL tests refuse a nonempty database and require an explicitly supplied *_test database. GitHub Actions runs these checks without reaching source sites or using production secrets.
 
 No full live crawl or connection to the user's local proxy has been performed by the implementation environment. Existing report totals (49,065 results) are not hardcoded and are not acceptance thresholds.

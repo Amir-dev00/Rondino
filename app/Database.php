@@ -34,8 +34,10 @@ final class Database
         try {
             self::$pdo->exec('SET SESSION wait_timeout=28800');
             self::$pdo->exec('SET SESSION interactive_timeout=28800');
+            // Full inventory crawl state can exceed the default 1 MiB packet.
+            self::$pdo->exec('SET SESSION max_allowed_packet=16777216');
         } catch (Throwable) {
-            // Host may forbid SESSION timeout changes; ignore.
+            // Host may forbid SESSION timeout/packet changes; ignore.
         }
         return self::$pdo;
     }

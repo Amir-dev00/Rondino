@@ -832,6 +832,25 @@ final class RondIrAdapter extends BaseAdapter
                 $env[$k] = $v;
             }
         }
+        // Prefer explicit process env; otherwise use local.php so start.bat/worker/cron all share the proxy.
+        if (empty($env['RONDINO_BROWSER_PROXY'])) {
+            $cfgProxy = trim((string) config('rondino_browser_proxy', ''));
+            if ($cfgProxy !== '') {
+                $env['RONDINO_BROWSER_PROXY'] = $cfgProxy;
+            }
+        }
+        if (empty($env['RONDINO_BROWSER_DEADLINE_MS'])) {
+            $deadline = (int) config('rondino_browser_deadline_ms', 0);
+            if ($deadline > 0) {
+                $env['RONDINO_BROWSER_DEADLINE_MS'] = (string) $deadline;
+            }
+        }
+        if (empty($env['RONDINO_API_BATCH_SIZE'])) {
+            $batch = (int) config('rondino_api_batch_size', 0);
+            if ($batch > 0) {
+                $env['RONDINO_API_BATCH_SIZE'] = (string) $batch;
+            }
+        }
         if (empty($env['RONDINO_BROWSER_PROXY']) && empty($env['HTTPS_PROXY']) && empty($env['HTTP_PROXY'])) {
             $sys = $this->windowsSystemProxy();
             if ($sys !== null) {

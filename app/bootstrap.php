@@ -18,6 +18,7 @@ require_once __DIR__ . '/Estimator.php';
 require_once __DIR__ . '/adapters/AdapterInterface.php';
 require_once __DIR__ . '/adapters/BaseAdapter.php';
 require_once __DIR__ . '/adapters/Registry.php';
+require_once __DIR__ . '/SourceSync.php';
 require_once __DIR__ . '/CrawlEngine.php';
 require_once __DIR__ . '/CrawlJob.php';
 require_once __DIR__ . '/Crawler.php';

@@ -14,6 +14,22 @@ if (!is_file(config_path())) {
     exit(1);
 }
 
+// Share local Playwright proxy/settings with Node helpers (rond.ir).
+foreach ([
+    'RONDINO_BROWSER_PROXY' => 'rondino_browser_proxy',
+    'RONDINO_BROWSER_DEADLINE_MS' => 'rondino_browser_deadline_ms',
+    'RONDINO_API_BATCH_SIZE' => 'rondino_api_batch_size',
+] as $envKey => $cfgKey) {
+    if (getenv($envKey)) {
+        continue;
+    }
+    $val = trim((string) config($cfgKey, ''));
+    if ($val !== '') {
+        putenv($envKey . '=' . $val);
+        $_ENV[$envKey] = $val;
+    }
+}
+
 $workerLock = fopen(dirname(__DIR__) . '/storage/logs/crawl-worker.lock', 'c');
 if (!$workerLock || !flock($workerLock, LOCK_EX | LOCK_NB)) { fwrite(STDERR, "Worker already running\n"); exit(0); }
 $stopFile = dirname(__DIR__) . '/storage/logs/crawl-worker.stop';
@@ -95,7 +111,8 @@ while (true) {
 
     // Drain until all completed/blocked
     $guard = 0;
-    while ($guard++ < 5000) {
+    // rond.ir alone can exceed 1k API pages; keep draining for long inventory runs.
+    while ($guard++ < 200000) {
         if (is_file($stopFile)) {
             CrawlJob::touch($jobId, 'cancelled', 'توقف توسط کاربر', CrawlMetrics::snapshot());
             break 2;

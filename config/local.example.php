@@ -26,4 +26,16 @@ return [
     'crawl_per_host' => 4,
     'crawl_rotate_wave' => 4,
     'crawl_use_worker' => 1,
+    // Optional local Playwright proxy for rond.ir (socks5/http). Leave empty on cPanel.
+    'rondino_browser_proxy' => '',
+    'rondino_browser_deadline_ms' => 180000,
+    'rondino_api_batch_size' => 3,
+    // Set 1 to let the local worker drain seller-contact enrichment when inventory is idle.
+    'rond_enrich_contacts' => 0,
+    // Incremental crawl (list API omits update millis; overlap of known IDs + periodic --full)
+    'rondino_incremental_overlap_pages' => 3,
+    'rondino_incremental_max_pages' => 50,
+    'rondino_full_reconcile_every_hours' => 168,
+    // 0 = never re-fetch verified contacts; >0 = days before optional recheck
+    'rondino_contact_recheck_days' => 0,
 ];

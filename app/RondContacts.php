@@ -56,13 +56,23 @@ final class RondContacts
         $lock = $pdo->query("SELECT GET_LOCK('rondino-contacts',0)")->fetchColumn();
         if ((int) $lock !== 1) return false;
         try {
+            // Prefer never-checked offers. Skip offers that already have verified seller phones.
+            // Revisit unresolved/failed only after retry_at; optional expiry can re-queue verified rows.
+            $recheckDays = max(0, (int) config('rondino_contact_recheck_days', 0));
+            $recheckSql = $recheckDays > 0
+                ? "OR (c.status='verified' AND c.checked_at IS NOT NULL AND c.checked_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$recheckDays} DAY))"
+                : '';
             $row = $pdo->query("SELECT o.id,o.external_id,o.canonical_url,n.number, COALESCE(c.attempts,0) attempts
                 FROM offers o JOIN sources s ON s.id=o.source_id JOIN sim_numbers n ON n.id=o.sim_number_id
                 LEFT JOIN rond_contact_checks c ON c.offer_id=o.id
                 WHERE s.slug='rond-ir' AND s.is_enabled=1
-                AND NOT EXISTS (SELECT 1 FROM offer_contacts oc WHERE oc.offer_id=o.id)
-                AND (c.offer_id IS NULL OR (c.retry_at <= UTC_TIMESTAMP() AND c.attempts < 5))
-                ORDER BY o.id LIMIT 1")->fetch();
+                AND (
+                    (NOT EXISTS (SELECT 1 FROM offer_contacts oc WHERE oc.offer_id=o.id)
+                     AND (c.offer_id IS NULL OR (c.retry_at <= UTC_TIMESTAMP() AND c.attempts < 5)))
+                    {$recheckSql}
+                )
+                ORDER BY CASE WHEN c.offer_id IS NULL THEN 0 WHEN c.status='failed' THEN 1 ELSE 2 END, o.id
+                LIMIT 1")->fetch();
             if (!$row) return false;
             $adapter = Registry::get('rond-ir');
             $res = $adapter->fetchDetail((string) $row['canonical_url']);
