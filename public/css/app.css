@@ -591,6 +591,106 @@ button.secondary, a.secondary, .btn-like.secondary {
 /* legacy market cards kept for estimate/deals compatibility */
 .market-cards { display: none; }
 
+/* —— Sources crawl clarity —— */
+.sources-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  align-items: center;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+.sources-legend strong { color: var(--ink); }
+.sources-table th {
+  white-space: normal;
+  vertical-align: bottom;
+}
+.sources-table td {
+  vertical-align: top;
+}
+.source-stat-block {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+  background: #f8fafc;
+}
+.source-stat-block.current {
+  border-color: rgba(15, 118, 110, 0.28);
+  background: linear-gradient(180deg, #fff, var(--accent-soft));
+}
+.source-stat-block.stored {
+  border-color: rgba(30, 64, 97, 0.22);
+  background: linear-gradient(180deg, #fff, #f0f4f8);
+}
+.source-stat-block.health {
+  background: #fff;
+}
+.source-stat-block-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 0.4rem;
+}
+.source-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem 0.6rem;
+  margin-top: 0.5rem;
+}
+.source-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+  min-width: 0;
+}
+.source-metric-label {
+  font-size: 0.72rem;
+  color: var(--muted);
+  line-height: 1.35;
+}
+.source-metric-value {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--navy);
+}
+.metric-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  font-size: 0.65rem;
+  color: var(--muted);
+  cursor: help;
+  vertical-align: middle;
+}
+.source-subline {
+  margin-top: 0.45rem;
+  font-size: 0.8rem;
+}
+@media (max-width: 1100px) {
+  .sources-table thead { display: none; }
+  .sources-table, .sources-table tbody, .sources-table tr, .sources-table td {
+    display: block;
+    width: 100%;
+  }
+  .sources-table tr {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 0.85rem;
+    margin-bottom: 0.85rem;
+    background: var(--surface);
+  }
+  .sources-table td {
+    border: none;
+    padding: 0.35rem 0;
+  }
+  .source-metric-grid { grid-template-columns: 1fr 1fr; }
+}
+
 @media (max-width: 1100px) {
   .stat-grid, .stat-grid.compact, .chart-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

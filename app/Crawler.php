@@ -93,6 +93,21 @@ final class Crawler
         return $out;
     }
 
+    /**
+     * Stored MySQL inventory for a source (shared grouped query — not per-row N+1).
+     * @return array{listings:int,unique_sims:int,with_contact:int,phone_records:int}
+     */
+    private function storedInventoryForSource(int $sourceId): array
+    {
+        $st = Inventory::sourceStats($sourceId);
+        return [
+            'listings' => (int) ($st['listings'] ?? 0),
+            'unique_sims' => (int) ($st['unique_sims'] ?? 0),
+            'with_contact' => (int) ($st['with_contact'] ?? 0),
+            'phone_records' => (int) ($st['phone_records'] ?? 0),
+        ];
+    }
+
     /** @return array<string,mixed> */
     public function progressSnapshot(string $slug): array
     {
@@ -105,13 +120,47 @@ final class Crawler
         $pass = $pstmt->fetch();
         $adapter = Registry::get($slug);
         $seedCount = $adapter ? count($adapter->seedUrls()) : 0;
+        $sourceId = (int) ($src['id'] ?? 0);
+        $stored = $sourceId > 0
+            ? $this->storedInventoryForSource($sourceId)
+            : ['listings' => 0, 'unique_sims' => 0, 'with_contact' => 0, 'phone_records' => 0];
+
+        $inventoryFields = [
+            // Clear names for UI
+            'db_stored_offers' => $stored['listings'],
+            'db_unique_sims' => $stored['unique_sims'],
+            'db_offers_with_contact' => $stored['with_contact'],
+            'db_phone_records' => $stored['phone_records'],
+            // Backward-compatible aliases (db_unique_offers was always DISTINCT sim_number_id)
+            'db_unique_offers' => $stored['unique_sims'],
+            'contact_offers' => $stored['with_contact'],
+        ];
 
         if (empty($src['is_enabled']) || $slug === 'setaresim') {
-            return ['slug'=>$slug, 'name'=>$src['name'] ?? $slug, 'status'=>'disabled', 'status_fa'=>'غیرفعال',
-                'offers_found'=>0, 'last_batch_offers'=>0, 'progress_label'=>'منبع غیرفعال است'];
+            return array_merge([
+                'slug' => $slug,
+                'name' => $src['name'] ?? $slug,
+                'status' => 'disabled',
+                'status_fa' => 'غیرفعال',
+                'offers_found' => 0,
+                'unique_offers_pass' => 0,
+                'inserted_pass' => 0,
+                'updated_pass' => 0,
+                'distinct_sims_pass' => 0,
+                'pages_fetched' => 0,
+                'last_batch_offers' => 0,
+                'last_batch_at_fa' => '—',
+                'progress_label' => 'منبع غیرفعال است',
+                'last_error' => $src['last_error'] ?? null,
+                'next_retry_at_fa' => '—',
+                'coverage_scope' => '',
+                'inventory_path' => false,
+                'stop_reason' => null,
+                'source_total_elements' => null,
+            ], $inventoryFields);
         }
         if (!$pass) {
-            return [
+            return array_merge([
                 'slug' => $slug,
                 'name' => $src['name'] ?? $slug,
                 'status' => 'idle',
@@ -121,20 +170,25 @@ final class Crawler
                 'seed_total' => $seedCount,
                 'offers_found' => 0,
                 'unique_offers_pass' => 0,
-                'db_unique_offers' => 0,
+                'inserted_pass' => 0,
+                'updated_pass' => 0,
+                'distinct_sims_pass' => 0,
                 'pages_fetched' => 0,
                 'coverage_scope' => '',
                 'coverage_complete' => false,
                 'coverage_label' => '',
                 'stop_reason' => null,
+                'inventory_path' => false,
+                'source_total_elements' => null,
                 'last_batch_offers' => 0,
                 'last_batch_at' => null,
                 'last_batch_at_fa' => '—',
                 'progress_label' => 'هنوز شروع نشده',
                 'last_error' => $src['last_error'] ?? null,
+                'next_retry_at_fa' => '—',
                 'updated_at' => null,
                 'updated_at_fa' => '—',
-            ];
+            ], $inventoryFields);
         }
 
         $status = (string) $pass['status'];
@@ -160,20 +214,15 @@ final class Crawler
         }
         $coverage = is_array($state['coverage'] ?? null) ? $state['coverage'] : [];
         $uniqueOffers = (int) ($state['unique_offers'] ?? $pass['offers_found'] ?? 0);
-        $dbUnique = 0;
-        $sourceId = (int) ($src['id'] ?? 0);
-        if ($sourceId > 0) {
-            $cstmt = $pdo->prepare(
-                'SELECT COUNT(DISTINCT sim_number_id) FROM offers WHERE source_id = ?'
-            );
-            $cstmt->execute([$sourceId]);
-            $dbUnique = (int) $cstmt->fetchColumn();
+
+        $seenSims = is_array($state['seen_sim_numbers'] ?? null) ? $state['seen_sim_numbers'] : [];
+        if (isset($seenSims['_sidecar'], $seenSims['count'])) {
+            $distinctSimsPass = (int) $seenSims['count'];
+        } else {
+            $distinctSimsPass = count($seenSims);
         }
 
-        $contacts = $pdo->prepare('SELECT COUNT(*) FROM offers o WHERE source_id=? AND EXISTS (SELECT 1 FROM offer_contacts c WHERE c.offer_id=o.id)');
-        $contacts->execute([$sourceId]);
-        $contactOffers = (int) $contacts->fetchColumn();
-        return [
+        return array_merge([
             'slug' => $slug,
             'name' => $src['name'] ?? $slug,
             'status' => $status,
@@ -183,21 +232,21 @@ final class Crawler
             'seed_total' => $seedCount,
             'offers_found' => $uniqueOffers,
             'unique_offers_pass' => $uniqueOffers,
-            'db_unique_offers' => $dbUnique,
+            'inserted_pass' => (int) ($state['incremental_inserted'] ?? 0),
+            'updated_pass' => (int) ($state['incremental_updated'] ?? 0),
             'pages_fetched' => (int) $pass['pages_fetched'],
             'source_total_elements' => isset($state['source_total_elements']) ? (int) $state['source_total_elements'] : null,
             'source_total_pages' => isset($state['source_total_pages']) ? (int) $state['source_total_pages'] : null,
             'coverage_scope' => (string) ($coverage['scope'] ?? ''),
             'coverage_complete' => $status === 'completed' && !empty($coverage['is_complete_inventory']) && empty($state['inventory_changed_during_crawl']) && $uniqueOffers >= (int) ($state['source_total_elements'] ?? 0),
             'inventory_path' => !empty($coverage['is_complete_inventory']),
-            'distinct_sims_pass' => count($state['seen_sim_numbers'] ?? []),
+            'distinct_sims_pass' => $distinctSimsPass,
             'source_rows' => (int) ($state['source_records'] ?? 0),
             'excluded_rows' => (int) ($state['excluded_rows'] ?? 0),
             'duplicate_rows' => (int) ($state['duplicate_rows'] ?? 0),
             'total_observed_at_fa' => Jalali::formatDateTime($state['total_observed_at'] ?? null),
             'inventory_changed' => !empty($state['inventory_changed_during_crawl']),
             'next_retry_at_fa' => Jalali::formatDateTime(($retryAt = max(array_column($state['branches'] ?? [], 'retry_at') ?: [0])) ? gmdate('Y-m-d H:i:s', (int) $retryAt) : null),
-            'contact_offers' => $contactOffers,
             'coverage_label' => (string) ($coverage['label'] ?? ''),
             'stop_reason' => $state['stop_reason'] ?? null,
             'last_batch_offers' => (int) $pass['last_batch_offers'],
@@ -209,7 +258,9 @@ final class Crawler
             'updated_at' => $pass['updated_at'],
             'updated_at_fa' => Jalali::formatDateTime($pass['updated_at'] ?? null),
             'current_url' => $pass['current_url'],
-        ];
+            'last_success_at' => $src['last_success_at'] ?? null,
+            'last_success_at_fa' => Jalali::formatDateTime($src['last_success_at'] ?? null),
+        ], $inventoryFields);
     }
 }
 

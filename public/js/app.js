@@ -14,6 +14,11 @@
     return res.json();
   }
 
+  function setMetricValue(row, cls, text) {
+    var el = qs('.' + cls + ' .source-metric-value', row);
+    if (el) el.textContent = String(text);
+  }
+
   function applyProgressRows(allProgress) {
     if (!allProgress || !allProgress.length) return;
     allProgress.forEach(function (p) {
@@ -21,45 +26,70 @@
       if (!row) return;
       const statusEl = qs('.js-pass-status', row);
       const labelEl = qs('.js-pass-label', row);
-      const statsEl = qs('.js-pass-stats', row);
-      const offersEl = qs('.js-offers-found', row);
       if (statusEl) statusEl.textContent = p.status_fa || p.status || '';
       if (labelEl) labelEl.textContent = p.progress_label || '—';
-      if (statsEl) {
-        var when = p.last_batch_at_fa || '—';
-        statsEl.textContent = 'یکتای گذر: ' + (p.unique_offers_pass || p.offers_found || 0)
-          + ' · صفحات: ' + (p.pages_fetched || 0)
-          + ' · آخرین دسته: ' + (p.last_batch_offers || 0)
-          + (when && when !== '—' ? ' · ' + when : '');
+
+      var passOffers = p.unique_offers_pass || p.offers_found || 0;
+      var dbSims = p.db_unique_sims != null ? p.db_unique_sims : (p.db_unique_offers || 0);
+      var dbOffers = p.db_stored_offers != null ? p.db_stored_offers : 0;
+      var withContact = p.db_offers_with_contact != null ? p.db_offers_with_contact : (p.contact_offers || 0);
+      var phones = p.db_phone_records != null ? p.db_phone_records : 0;
+      setMetricValue(row, 'js-metric-pass-offers', passOffers);
+      setMetricValue(row, 'js-metric-pass-sims', p.distinct_sims_pass || 0);
+      setMetricValue(row, 'js-metric-inserted', p.inserted_pass || 0);
+      setMetricValue(row, 'js-metric-updated', p.updated_pass || 0);
+      setMetricValue(row, 'js-metric-pages', p.pages_fetched || 0);
+      setMetricValue(row, 'js-metric-batch', p.last_batch_offers || 0);
+      setMetricValue(row, 'js-metric-db-offers', dbOffers);
+      setMetricValue(row, 'js-metric-db-sims', dbSims);
+      setMetricValue(row, 'js-metric-db-with-contact', withContact);
+      setMetricValue(row, 'js-metric-db-phones', phones);
+
+      var batchTimeEl = qs('.js-metric-batch-time', row);
+      if (batchTimeEl) {
+        batchTimeEl.textContent = 'زمان آخرین دسته: ' + (p.last_batch_at_fa || '—');
       }
+
       var covEl = qs('.js-pass-coverage', row);
       if (covEl) {
         var covText = 'پوشش: هنوز مشخص نشده';
         if (p.inventory_path) {
-          covText = 'مسیر پوشش: موجودی لیست API (نه نمونه صفحه اصلی)'
-            + (p.source_total_elements ? (' · کل منبع: ' + p.source_total_elements) : '');
+          covText = 'پوشش: موجودی لیست API'
+            + (p.source_total_elements ? (' · اعلام منبع: ' + p.source_total_elements) : '');
         } else if (p.coverage_scope === 'homepage_or_html_sample') {
-          covText = 'مسیر پوشش: نمونه صفحه اصلی (موجودی کامل نیست)';
+          covText = 'پوشش: نمونه صفحه اصلی (موجودی کامل نیست)';
         } else if (p.coverage_scope) {
-          covText = 'مسیر پوشش: ' + p.coverage_scope;
+          covText = 'پوشش: ' + p.coverage_scope;
         }
         if (p.stop_reason) covText += ' · توقف: ' + p.stop_reason;
         covEl.textContent = covText;
       }
-      var contactEl = qs('.js-pass-contact', row);
-      if (contactEl) contactEl.textContent = 'آگهی دارای تماس (کل سابقه): ' + (p.contact_offers || 0) + ' · شماره یکتای این گذر: ' + (p.distinct_sims_pass || 0);
       var retryEl = qs('.js-pass-retry', row);
       if (retryEl) retryEl.textContent = 'تلاش بعدی: ' + (p.next_retry_at_fa || '—');
-      var dbEl = qs('.js-pass-db', row);
-      if (dbEl) dbEl.textContent = 'DB تاریخی یکتا: ' + (p.db_unique_offers || 0);
-      if (offersEl) {
-        offersEl.innerHTML = String(p.unique_offers_pass || p.offers_found || 0)
-          + '<div class="muted js-db-unique">DB: ' + (p.db_unique_offers || 0) + '</div>';
+
+      // Legacy hidden hooks stay in sync for any older UI consumers
+      var offersEl = qs('.js-offers-found', row);
+      if (offersEl) offersEl.textContent = String(passOffers);
+      var statsEl = qs('.js-pass-stats', row);
+      if (statsEl) {
+        statsEl.textContent = 'آگهی‌های یکتای اجرای فعلی: ' + passOffers
+          + ' · صفحات: ' + (p.pages_fetched || 0)
+          + ' · آخرین دسته: ' + (p.last_batch_offers || 0);
       }
+      var contactEl = qs('.js-pass-contact', row);
+      if (contactEl) {
+        contactEl.textContent = 'آگهی دارای تماس تأییدشده: ' + withContact
+          + ' · سیم‌کارت یکتای این گذر: ' + (p.distinct_sims_pass || 0);
+      }
+      var dbEl = qs('.js-pass-db', row);
+      if (dbEl) dbEl.textContent = 'کل سیم‌کارت‌های یکتای ذخیره‌شده: ' + dbSims;
+
       const err = qs('.js-err', row);
-      if (err && p.last_error) {
-        err.className = 'status-fail js-err';
-        err.textContent = p.last_error;
+      if (err) {
+        if (p.last_error) {
+          err.className = 'status-fail js-err';
+          err.textContent = p.last_error;
+        }
       }
     });
   }
@@ -71,8 +101,8 @@
     if (r && r.slug) parts.push('منبع: ' + r.slug);
     if (p.status_fa) parts.push('وضعیت: ' + p.status_fa);
     if (p.progress_label) parts.push(p.progress_label);
-    if (typeof p.offers_found !== 'undefined') parts.push('آگهی‌های گذر: ' + p.offers_found);
-    if (typeof p.last_batch_offers !== 'undefined') parts.push('آخرین دسته: ' + p.last_batch_offers);
+    if (typeof p.offers_found !== 'undefined') parts.push('آگهی‌های یکتای اجرای فعلی: ' + p.offers_found);
+    if (typeof p.last_batch_offers !== 'undefined') parts.push('آگهی در آخرین دسته: ' + p.last_batch_offers);
     if (r && r.message) parts.push(r.message);
     return parts.join('\n');
   }
