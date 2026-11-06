@@ -100,9 +100,20 @@ if ($route === 'refresh' && request_is_post()) {
     if (post('continue', '') === '1') {
         $restart = false;
     }
+    // Internal identifiers only: incremental = quick update, full = complete inventory scan.
+    // On resume (continue=1), CrawlEngine keeps the stored crawl_mode and ignores this value.
+    $crawlMode = (string) post('crawl_mode', 'incremental');
+    $crawlMode = $crawlMode === 'full' ? 'full' : 'incremental';
     // Single-source: still run in-request (works on cPanel and local)
-    $result = $crawler->runBatch($slug, $restart);
-    echo json_encode(['done' => in_array($result['pass_status'] ?? '', ['completed', 'blocked'], true), 'slug' => $slug, 'result' => $result], JSON_UNESCAPED_UNICODE);
+    $result = $crawler->runBatch($slug, $restart, $crawlMode);
+    $terminal = in_array((string) ($result['pass_status'] ?? ''), ['completed', 'blocked', 'partial'], true);
+    $effectiveMode = (string) (($result['progress']['crawl_mode'] ?? null) ?: ($restart ? $crawlMode : ''));
+    echo json_encode([
+        'done' => $terminal && empty($result['busy']),
+        'slug' => $slug,
+        'crawl_mode' => $effectiveMode !== '' ? $effectiveMode : $crawlMode,
+        'result' => $result,
+    ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 

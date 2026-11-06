@@ -74,10 +74,10 @@ ob_start();
   <input type="hidden" id="page-csrf" name="_csrf" value="<?= e($csrf) ?>">
   <div class="sources-toolbar">
     <div class="actions">
-      <button type="button" id="btn-refresh-all" data-csrf="<?= e($csrf) ?>">به‌روزرسانی همه سایت‌ها</button>
+      <button type="button" id="btn-refresh-all" data-csrf="<?= e($csrf) ?>" title="به‌روزرسانی سریع همه سایت‌ها">به‌روزرسانی سریع همه</button>
       <button type="button" id="btn-pause-all" class="secondary" hidden>توقف دریافت اطلاعات</button>
     </div>
-    <span class="muted" id="refresh-status">با باز بودن این صفحه، سایت‌های سررسید‌شده هر <?= (int) $autoMin ?> دقیقه یک‌بار بررسی می‌شوند.</span>
+    <span class="muted" id="refresh-status">با باز بودن این صفحه، سایت‌های سررسید‌شده هر <?= (int) $autoMin ?> دقیقه با «به‌روزرسانی سریع» بررسی می‌شوند.</span>
   </div>
   <div class="progress" id="refresh-progress" hidden><span></span></div>
   <div id="refresh-detail" class="muted sources-refresh-detail" hidden></div>
@@ -94,9 +94,15 @@ ob_start();
     <?php if ($receivingNow !== []):
         $act = $receivingNow[0];
         $pct = $act['progress_pct'] ?? null;
+        $modeFa = (string) ($act['crawl_mode_fa'] ?? CrawlStatusCopy::modeLabel($act['crawl_mode'] ?? null));
     ?>
       <div class="sources-activity-row">
         <strong class="js-activity-name"><?= e((string) ($act['name'] ?? $act['slug'])) ?></strong>
+        <?php if ($modeFa !== ''): ?>
+          <span class="sources-mode-chip js-activity-mode"><?= e($modeFa) ?></span>
+        <?php else: ?>
+          <span class="sources-mode-chip js-activity-mode" hidden></span>
+        <?php endif; ?>
         <span class="muted js-activity-summary"><?= e((string) ($act['user_summary'] ?? 'در حال دریافت اطلاعات')) ?></span>
       </div>
       <div
@@ -107,11 +113,23 @@ ob_start();
       ><span style="<?= $pct !== null ? 'width:' . (int) $pct . '%' : '' ?>"></span></div>
       <div class="muted sources-activity-meta">
         <span class="js-activity-line"><?= e((string) ($act['user_activity'] ?: 'دریافت اطلاعات در جریان است.')) ?></span>
+        <span class="js-activity-db">کل ذخیره‌شده: <bdi class="ltr-num"><?= number_format((int) ($act['db_stored_offers'] ?? 0)) ?></bdi></span>
         <span class="js-activity-updated">آخرین تأیید: <?= e((string) ($act['updated_at_fa'] ?? '—')) ?></span>
       </div>
     <?php endif; ?>
   </div>
 </section>
+
+<dialog id="full-crawl-confirm" class="sources-confirm" aria-labelledby="full-crawl-title">
+  <form method="dialog" class="sources-confirm-body">
+    <h3 id="full-crawl-title">بررسی کامل سایت شروع شود؟</h3>
+    <p id="full-crawl-desc">تمام آگهی‌های این سایت دوباره بررسی می‌شوند. اطلاعات قبلی حذف نمی‌شوند، اما این کار ممکن است زمان‌بر باشد.</p>
+    <div class="sources-confirm-actions">
+      <button type="submit" value="cancel" class="secondary">انصراف</button>
+      <button type="submit" value="confirm" class="btn-confirm-full">شروع بررسی کامل</button>
+    </div>
+  </form>
+</dialog>
 
 <div class="sources-list" id="sources-table">
   <?php foreach ($sources as $s):
@@ -181,10 +199,51 @@ ob_start();
       </div>
     </div>
 
+    <?php
+      $busy = in_array($userStatus, [CrawlStatusCopy::STATUS_RECEIVING], true)
+          || in_array((string) ($prog['status'] ?? ''), ['running'], true);
+    ?>
     <div class="source-card-actions">
-      <a class="secondary btn-like" href="/?r=source&amp;slug=<?= e(urlencode((string) $s['slug'])) ?>">مشاهده شماره‌ها</a>
       <?php if ($enabled): ?>
-        <button type="button" class="btn-refresh-one" data-slug="<?= e($s['slug']) ?>" data-csrf="<?= e($csrf) ?>">به‌روزرسانی اطلاعات</button>
+        <div class="source-crawl-actions">
+          <button
+            type="button"
+            class="btn-crawl-quick"
+            data-slug="<?= e($s['slug']) ?>"
+            data-csrf="<?= e($csrf) ?>"
+            data-crawl-mode="incremental"
+            <?= $busy ? 'disabled' : '' ?>
+            title="آگهی‌های جدید و تغییرات اخیر سایت بررسی می‌شوند."
+          >
+            <span class="btn-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.6-6.2"/><polyline points="21 3 21 9 15 9"/></svg>
+            </span>
+            به‌روزرسانی سریع
+          </button>
+          <button
+            type="button"
+            class="secondary btn-crawl-full"
+            data-slug="<?= e($s['slug']) ?>"
+            data-csrf="<?= e($csrf) ?>"
+            data-crawl-mode="full"
+            <?= $busy ? 'disabled' : '' ?>
+            title="تمام آگهی‌های سایت دوباره بررسی می‌شوند. این کار ممکن است زمان بیشتری ببرد."
+          >
+            <span class="btn-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+            </span>
+            بررسی کامل سایت
+          </button>
+          <a class="secondary btn-like" href="/?r=source&amp;slug=<?= e(urlencode((string) $s['slug'])) ?>">مشاهده شماره‌ها</a>
+        </div>
+        <p class="source-action-hints muted">
+          <span><b>به‌روزرسانی سریع:</b> آگهی‌های جدید و تغییرات اخیر سایت بررسی می‌شوند.</span>
+          <span><b>بررسی کامل:</b> تمام آگهی‌های سایت دوباره بررسی می‌شوند. این کار ممکن است زمان بیشتری ببرد.</span>
+        </p>
+      <?php else: ?>
+        <div class="source-crawl-actions">
+          <a class="secondary btn-like" href="/?r=source&amp;slug=<?= e(urlencode((string) $s['slug'])) ?>">مشاهده شماره‌ها</a>
+        </div>
       <?php endif; ?>
       <?php if ($hasError): ?>
         <button type="button" class="secondary js-toggle-error" data-target="err-<?= e($s['slug']) ?>">مشاهده خطا</button>
@@ -239,6 +298,7 @@ ob_start();
         <details class="source-tech">
           <summary>جزئیات فنی</summary>
           <div class="source-tech-body muted">
+            <div>حالت بررسی: <span class="ltr-num js-tech-mode"><?= e((string) ($prog['crawl_mode'] ?? '—')) ?></span></div>
             <div>وضعیت داخلی: <span class="ltr-num js-tech-status"><?= e((string) ($prog['status'] ?? '—')) ?></span></div>
             <div>دلیل توقف: <span class="ltr-num js-tech-stop"><?= e($stopRaw !== '' ? $stopRaw : '—') ?></span></div>
             <div class="js-pass-label">برچسب پیشرفت: <?= e((string) ($prog['progress_label'] ?? '—')) ?></div>

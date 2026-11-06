@@ -20,11 +20,13 @@ final class Crawler
     }
 
     /**
+     * @param 'full'|'incremental' $crawlMode
      * @return array<string,mixed>
      */
-    public function runBatch(string $slug, bool $restart = false): array
+    public function runBatch(string $slug, bool $restart = false, string $crawlMode = 'full'): array
     {
-        return $this->engine->advanceSource($slug, $restart, $this->pageBudget);
+        $crawlMode = $crawlMode === 'incremental' ? 'incremental' : 'full';
+        return $this->engine->advanceSource($slug, $restart, $this->pageBudget, $crawlMode);
     }
 
     /**
@@ -47,13 +49,26 @@ final class Crawler
             $snap = $this->progressSnapshot($slug);
             $st = $snap['status'] ?? 'idle';
             if (in_array($st, ['paused', 'running', 'idle'], true)) {
-                $candidates[] = ['slug' => $slug, 'restart' => $st === 'idle', 'priority' => 0, 'updated' => (string) ($snap['updated_at'] ?? '')];
-            } elseif ($startFresh && in_array($st, ['completed', 'blocked'], true)) {
-                $candidates[] = ['slug' => $slug, 'restart' => true, 'priority' => 1, 'updated' => (string) ($snap['updated_at'] ?? '')];
+                $candidates[] = [
+                    'slug' => $slug,
+                    'restart' => $st === 'idle',
+                    // Fresh idle starts use quick/incremental; resumes keep stored crawl_mode.
+                    'crawl_mode' => 'incremental',
+                    'priority' => 0,
+                    'updated' => (string) ($snap['updated_at'] ?? ''),
+                ];
+            } elseif ($startFresh && in_array($st, ['completed', 'blocked', 'partial'], true)) {
+                $candidates[] = [
+                    'slug' => $slug,
+                    'restart' => true,
+                    'crawl_mode' => 'incremental',
+                    'priority' => 1,
+                    'updated' => (string) ($snap['updated_at'] ?? ''),
+                ];
             }
         }
         if ($candidates === []) {
-            return ['done' => true, 'message' => 'همه گذرهای فعال تمام یا مسدود شده‌اند.', 'all_progress' => $this->allProgress()];
+            return ['done' => true, 'message' => 'همه سایت‌های این دور بررسی شدند.', 'all_progress' => $this->allProgress()];
         }
         usort($candidates, static function ($a, $b) {
             if ($a['priority'] !== $b['priority']) {
@@ -67,7 +82,14 @@ final class Crawler
         $picked = array_slice($candidates, 0, $wave);
         $last = null;
         foreach ($picked as $pick) {
-            $last = $this->engine->advanceSource($pick['slug'], (bool) $pick['restart'], $this->pageBudget);
+            $mode = (($pick['crawl_mode'] ?? '') === 'full') ? 'full' : 'incremental';
+            $last = $this->engine->advanceSource(
+                $pick['slug'],
+                (bool) $pick['restart'],
+                $this->pageBudget,
+                // On resume, CrawlEngine ignores this and keeps stored crawl_mode.
+                $mode
+            );
         }
         $still = 0;
         foreach ($this->allProgress() as $p) {
@@ -159,6 +181,7 @@ final class Crawler
                 'coverage_scope' => '',
                 'inventory_path' => false,
                 'stop_reason' => null,
+                'crawl_mode' => null,
                 'source_total_elements' => null,
                 'source_total_pages' => null,
             ], $inventoryFields));
@@ -181,6 +204,7 @@ final class Crawler
                 'coverage_complete' => false,
                 'coverage_label' => '',
                 'stop_reason' => null,
+                'crawl_mode' => null,
                 'inventory_path' => false,
                 'source_total_elements' => null,
                 'source_total_pages' => null,
@@ -246,6 +270,7 @@ final class Crawler
             'next_retry_at_fa' => Jalali::formatDateTime(($retryAt = max(array_column($state['branches'] ?? [], 'retry_at') ?: [0])) ? gmdate('Y-m-d H:i:s', (int) $retryAt) : null),
             'coverage_label' => (string) ($coverage['label'] ?? ''),
             'stop_reason' => $state['stop_reason'] ?? null,
+            'crawl_mode' => (($state['crawl_mode'] ?? '') === 'incremental') ? 'incremental' : ((($state['crawl_mode'] ?? '') === 'full') ? 'full' : null),
             'last_batch_offers' => (int) $pass['last_batch_offers'],
             'last_batch_at' => $pass['last_batch_at'],
             'last_batch_at_fa' => Jalali::formatDateTime($pass['last_batch_at'] ?? null),

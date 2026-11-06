@@ -12,21 +12,32 @@ final class CrawlStatusCopy
     public const STATUS_UP_TO_DATE = 'up_to_date';
     public const STATUS_PARTIAL = 'partial';
     public const STATUS_PAUSED = 'paused';
+    public const STATUS_USER_STOPPED = 'user_stopped';
     public const STATUS_PROBLEM = 'problem';
     public const STATUS_NEVER = 'never';
     public const STATUS_STOPPED = 'stopped';
     public const STATUS_UNKNOWN = 'unknown';
 
+    public const MODE_QUICK = 'incremental';
+    public const MODE_FULL = 'full';
+
     /** @var array<string, string> */
     private const STATUS_LABELS = [
         self::STATUS_RECEIVING => 'در حال دریافت اطلاعات',
-        self::STATUS_UP_TO_DATE => 'به‌روز',
-        self::STATUS_PARTIAL => 'بخشی از اطلاعات دریافت شد',
+        self::STATUS_UP_TO_DATE => 'بررسی کامل شد',
+        self::STATUS_PARTIAL => 'بخشی از اطلاعات بررسی شد',
         self::STATUS_PAUSED => 'موقتاً متوقف شده',
+        self::STATUS_USER_STOPPED => 'توسط کاربر متوقف شد',
         self::STATUS_PROBLEM => 'مشکل در دریافت اطلاعات',
-        self::STATUS_NEVER => 'هنوز بررسی نشده',
+        self::STATUS_NEVER => 'در انتظار بررسی',
         self::STATUS_STOPPED => 'متوقف شده',
         self::STATUS_UNKNOWN => 'وضعیت دریافت اطلاعات مشخص نیست',
+    ];
+
+    /** @var array<string, string> */
+    private const MODE_LABELS = [
+        self::MODE_QUICK => 'به‌روزرسانی سریع',
+        self::MODE_FULL => 'بررسی کامل سایت',
     ];
 
     /**
@@ -80,9 +91,9 @@ final class CrawlStatusCopy
             self::STATUS_PARTIAL,
         ],
         'manual_stop' => [
-            'دریافت اطلاعات توسط کاربر متوقف شد.',
+            'بررسی این سایت توسط کاربر متوقف شد.',
             'هر زمان بخواهید می‌توانید دوباره شروع کنید.',
-            self::STATUS_PAUSED,
+            self::STATUS_USER_STOPPED,
         ],
         'rate_limit' => [
             'سایت موقتاً اجازه دریافت اطلاعات بیشتر نمی‌دهد.',
@@ -121,6 +132,17 @@ final class CrawlStatusCopy
         return self::STATUS_LABELS[$userStatus] ?? self::STATUS_LABELS[self::STATUS_UNKNOWN];
     }
 
+    public static function modeLabel(?string $crawlMode): string
+    {
+        if ($crawlMode === self::MODE_QUICK) {
+            return self::MODE_LABELS[self::MODE_QUICK];
+        }
+        if ($crawlMode === self::MODE_FULL) {
+            return self::MODE_LABELS[self::MODE_FULL];
+        }
+        return '';
+    }
+
     /**
      * Build user-facing fields for a progress snapshot.
      *
@@ -152,15 +174,17 @@ final class CrawlStatusCopy
 
         $summary = $stopInfo['summary'];
         $next = $stopInfo['next'];
+        $labelOverride = null;
 
         if ($summary === '') {
             $summary = match ($userStatus) {
                 self::STATUS_RECEIVING => 'در حال دریافت آگهی‌ها از این سایت.',
                 self::STATUS_PAUSED => 'دریافت اطلاعات فعلاً متوقف شده و از مرحله بعد قابل ادامه است.',
                 self::STATUS_UP_TO_DATE => $hasSuccess
-                    ? 'بررسی سایت تمام شد. اطلاعات جدید ذخیره شده‌اند.'
+                    ? 'بررسی این سایت تمام شد. اطلاعات جدید ذخیره شده‌اند.'
                     : 'این سایت آماده دریافت اطلاعات است.',
-                self::STATUS_PARTIAL => 'فقط بخشی از آگهی‌های سایت بررسی شده‌اند.',
+                self::STATUS_PARTIAL => 'بررسی این سایت متوقف شده است. بخشی از آگهی‌ها هنوز بررسی نشده‌اند.',
+                self::STATUS_USER_STOPPED => 'بررسی این سایت توسط کاربر متوقف شد.',
                 self::STATUS_PROBLEM => $lastError !== ''
                     ? 'در دریافت اطلاعات مشکلی پیش آمد.'
                     : 'دریافت اطلاعات با مشکل روبه‌رو شد.',
@@ -173,13 +197,22 @@ final class CrawlStatusCopy
         if ($next === '') {
             $next = match ($userStatus) {
                 self::STATUS_RECEIVING => 'لطفاً صبر کنید تا این مرحله تمام شود.',
-                self::STATUS_PAUSED, self::STATUS_PARTIAL => 'برای ادامه، «به‌روزرسانی اطلاعات» را بزنید.',
+                self::STATUS_PAUSED, self::STATUS_PARTIAL, self::STATUS_USER_STOPPED => 'برای ادامه، «به‌روزرسانی سریع» یا «بررسی کامل سایت» را بزنید.',
                 self::STATUS_PROBLEM => 'کمی بعد دوباره تلاش کنید.',
-                self::STATUS_NEVER => 'برای شروع، «به‌روزرسانی اطلاعات» را بزنید.',
+                self::STATUS_NEVER => 'برای شروع، «به‌روزرسانی سریع» را بزنید.',
                 self::STATUS_STOPPED => 'این سایت در پنل غیرفعال است.',
-                self::STATUS_UP_TO_DATE => 'نیازی به کار فوری نیست.',
+                self::STATUS_UP_TO_DATE => 'برای آگهی‌های تازه، «به‌روزرسانی سریع» کافی است.',
                 default => '',
             };
+        }
+
+        // After a finished successful pass, resting state reads as current — not a perpetual "complete" banner.
+        if (
+            $userStatus === self::STATUS_UP_TO_DATE
+            && $hasSuccess
+            && in_array($passStatus, ['idle', 'completed'], true)
+        ) {
+            $labelOverride = 'به‌روز';
         }
 
         $activity = '';
@@ -207,7 +240,10 @@ final class CrawlStatusCopy
             }
         }
 
-        $label = self::statusLabel($userStatus);
+        $label = $labelOverride ?? self::statusLabel($userStatus);
+        $crawlMode = (($snap['crawl_mode'] ?? '') === self::MODE_QUICK)
+            ? self::MODE_QUICK
+            : ((($snap['crawl_mode'] ?? '') === self::MODE_FULL) ? self::MODE_FULL : null);
 
         return [
             'user_status' => $userStatus,
@@ -218,6 +254,8 @@ final class CrawlStatusCopy
             'status_fa' => $label,
             'stop_reason_raw' => $rawStop,
             'progress_pct' => $progressPct,
+            'crawl_mode' => $crawlMode,
+            'crawl_mode_fa' => self::modeLabel($crawlMode),
         ];
     }
 
@@ -234,7 +272,9 @@ final class CrawlStatusCopy
             return self::STATUS_RECEIVING;
         }
         if ($passStatus === 'paused') {
-            return self::STATUS_PAUSED;
+            return $forcedFromStop === self::STATUS_USER_STOPPED
+                ? self::STATUS_USER_STOPPED
+                : self::STATUS_PAUSED;
         }
         if ($passStatus === 'blocked') {
             return self::STATUS_PROBLEM;
