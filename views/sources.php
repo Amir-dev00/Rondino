@@ -1,11 +1,15 @@
 <?php
 $pdo = Database::pdo();
-$sources = $pdo->query('SELECT * FROM sources ORDER BY id')->fetchAll();
+// Panel listing excludes permanently hidden sources (e.g. setaresim); historical DB rows stay intact.
+$sources = Inventory::allSources();
 $csrf = Csrf::token();
 $autoMin = (int) config('auto_refresh_minutes', 30);
 $crawler = new Crawler();
 $progressBySlug = [];
 foreach ($crawler->allProgress() as $p) {
+    if (Inventory::isHiddenFromPanel((string) $p['slug'])) {
+        continue;
+    }
     $progressBySlug[$p['slug']] = $p;
 }
 

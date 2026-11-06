@@ -65,7 +65,7 @@ while (true) {
         $idleLoops++;
         // Also auto-drain paused passes without a job (resume after browser closed)
         $paused = Database::pdo()->query(
-            "SELECT s.slug FROM crawl_passes p JOIN sources s ON s.id=p.source_id WHERE s.is_enabled=1 AND s.slug <> 'setaresim' AND p.status IN ('paused','running') LIMIT 8"
+            "SELECT s.slug FROM crawl_passes p JOIN sources s ON s.id=p.source_id WHERE s.is_enabled=1 AND s.slug NOT IN ('setaresim') AND p.status IN ('paused','running') LIMIT 8"
         )->fetchAll(PDO::FETCH_COLUMN);
         if ($paused) {
             foreach ($paused as $slug) {

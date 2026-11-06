@@ -8,6 +8,31 @@ declare(strict_types=1);
  */
 final class Inventory
 {
+    /**
+     * Sources hidden from the normal panel / crawl UI.
+     * Historical MySQL rows (offers, contacts, prices) are preserved.
+     * @var list<string>
+     */
+    public const PANEL_HIDDEN_SLUGS = ['setaresim'];
+
+    public static function isHiddenFromPanel(string $slug): bool
+    {
+        return in_array($slug, self::PANEL_HIDDEN_SLUGS, true);
+    }
+
+    /** SQL fragment: s.slug NOT IN (...hidden...) */
+    public static function panelVisibleSlugSql(string $alias = 's'): string
+    {
+        $parts = [];
+        foreach (self::PANEL_HIDDEN_SLUGS as $slug) {
+            $parts[] = Database::pdo()->quote($slug);
+        }
+        if ($parts === []) {
+            return '1=1';
+        }
+        return $alias . '.slug NOT IN (' . implode(',', $parts) . ')';
+    }
+
     /** @return array<string, mixed> */
     public static function parseFilters(array $extra = []): array
     {
@@ -89,17 +114,29 @@ final class Inventory
         return array_filter($all, static fn ($v) => $v !== '' && $v !== null);
     }
 
-    /** @return list<array<string,mixed>> */
+    /**
+     * Sources shown in the panel (nav, filters, crawl dashboard).
+     * Hidden sources such as setaresim are omitted; DB rows remain intact.
+     * @return list<array<string,mixed>>
+     */
     public static function allSources(): array
     {
-        return Database::pdo()->query(
-            'SELECT id, slug, name, base_url, list_url, is_enabled, last_success_at, last_attempt_at, last_error, last_offers_found
-             FROM sources ORDER BY name'
-        )->fetchAll();
+        $sql = 'SELECT id, slug, name, base_url, list_url, is_enabled, refresh_interval_minutes,
+                       last_success_at, last_attempt_at, last_error, last_offers_found
+                FROM sources s
+                WHERE ' . self::panelVisibleSlugSql('s') . '
+                ORDER BY name';
+        return Database::pdo()->query($sql)->fetchAll();
     }
 
-    public static function sourceBySlug(string $slug): ?array
+    /**
+     * @param bool $allowHidden When false (default), panel-hidden sources resolve as not found.
+     */
+    public static function sourceBySlug(string $slug, bool $allowHidden = false): ?array
     {
+        if (!$allowHidden && self::isHiddenFromPanel($slug)) {
+            return null;
+        }
         $stmt = Database::pdo()->prepare('SELECT * FROM sources WHERE slug = ? LIMIT 1');
         $stmt->execute([$slug]);
         $row = $stmt->fetch();
@@ -122,7 +159,9 @@ final class Inventory
             'unique_sims' => (int) $pdo->query('SELECT COUNT(*) FROM sim_numbers')->fetchColumn(),
             'total_listings' => (int) $pdo->query('SELECT COUNT(*) FROM offers')->fetchColumn(),
             'total_contacts' => (int) $pdo->query('SELECT COUNT(*) FROM offer_contacts')->fetchColumn(),
-            'active_sources' => (int) $pdo->query('SELECT COUNT(*) FROM sources WHERE is_enabled = 1')->fetchColumn(),
+            'active_sources' => (int) $pdo->query(
+                'SELECT COUNT(*) FROM sources s WHERE s.is_enabled = 1 AND ' . self::panelVisibleSlugSql('s')
+            )->fetchColumn(),
             'listings_with_contact' => (int) $pdo->query(
                 'SELECT COUNT(DISTINCT o.id) FROM offers o INNER JOIN offer_contacts oc ON oc.offer_id = o.id'
             )->fetchColumn(),
@@ -152,14 +191,15 @@ final class Inventory
     {
         $pdo = Database::pdo();
         $rows = $pdo->query(
-            "SELECT s.slug, s.name,
+            'SELECT s.slug, s.name,
                     COUNT(DISTINCT o.id) AS listings,
                     COUNT(DISTINCT CASE WHEN oc.id IS NOT NULL THEN o.id END) AS with_contact
              FROM sources s
              LEFT JOIN offers o ON o.source_id = s.id
              LEFT JOIN offer_contacts oc ON oc.offer_id = o.id
+             WHERE ' . self::panelVisibleSlugSql('s') . '
              GROUP BY s.id, s.slug, s.name
-             ORDER BY listings DESC"
+             ORDER BY listings DESC'
         )->fetchAll();
         $labels = [];
         $listings = [];
@@ -302,15 +342,23 @@ final class Inventory
     {
         $joins = ' JOIN sim_numbers sn ON sn.id = o.sim_number_id
                    JOIN sources src ON src.id = o.source_id ';
-        $where = ['1=1'];
+        $where = [self::panelVisibleSlugSql('src')];
         $params = [];
 
-        if (($f['slug'] ?? '') !== '') {
+        if (($f['slug'] ?? '') !== '' && !self::isHiddenFromPanel((string) $f['slug'])) {
             $where[] = 'src.slug = ?';
             $params[] = $f['slug'];
         } elseif (($f['source'] ?? '') !== '' && ctype_digit((string) $f['source'])) {
-            $where[] = 'o.source_id = ?';
-            $params[] = (int) $f['source'];
+            // Ignore filter if it points at a panel-hidden source.
+            $chk = Database::pdo()->prepare('SELECT slug FROM sources WHERE id = ? LIMIT 1');
+            $chk->execute([(int) $f['source']]);
+            $srcSlug = (string) ($chk->fetchColumn() ?: '');
+            if ($srcSlug !== '' && !self::isHiddenFromPanel($srcSlug)) {
+                $where[] = 'o.source_id = ?';
+                $params[] = (int) $f['source'];
+            } elseif (self::isHiddenFromPanel($srcSlug)) {
+                $where[] = '1=0';
+            }
         }
 
         if (($f['q'] ?? '') !== '') {
@@ -530,7 +578,7 @@ final class Inventory
     public static function countContacts(array $f, ?array $dates): int
     {
         $pdo = Database::pdo();
-        $where = ['1=1'];
+        $where = [self::panelVisibleSlugSql('src')];
         $params = [];
         $joins = ' FROM offer_contacts oc
                    INNER JOIN offers o ON o.id = oc.offer_id
@@ -549,9 +597,11 @@ final class Inventory
             $where[] = 'o.source_id = ?';
             $params[] = (int) $f['source'];
         }
-        if (($f['slug'] ?? '') !== '') {
+        if (($f['slug'] ?? '') !== '' && !self::isHiddenFromPanel((string) $f['slug'])) {
             $where[] = 'src.slug = ?';
             $params[] = $f['slug'];
+        } elseif (($f['slug'] ?? '') !== '' && self::isHiddenFromPanel((string) $f['slug'])) {
+            $where[] = '1=0';
         }
         if (($f['contact_scope'] ?? '') !== '') {
             $where[] = 'oc.scope = ?';
@@ -575,7 +625,7 @@ final class Inventory
     /** @return list<array<string,mixed>> */
     public static function listContacts(array $f, ?array $dates, Pagination $pager): array
     {
-        $where = ['1=1'];
+        $where = [self::panelVisibleSlugSql('src')];
         $params = [];
         $joins = ' FROM offer_contacts oc
                    INNER JOIN offers o ON o.id = oc.offer_id
@@ -594,9 +644,11 @@ final class Inventory
             $where[] = 'o.source_id = ?';
             $params[] = (int) $f['source'];
         }
-        if (($f['slug'] ?? '') !== '') {
+        if (($f['slug'] ?? '') !== '' && !self::isHiddenFromPanel((string) $f['slug'])) {
             $where[] = 'src.slug = ?';
             $params[] = $f['slug'];
+        } elseif (($f['slug'] ?? '') !== '' && self::isHiddenFromPanel((string) $f['slug'])) {
+            $where[] = '1=0';
         }
         if (($f['contact_scope'] ?? '') !== '') {
             $where[] = 'oc.scope = ?';

@@ -28,7 +28,7 @@ final class CrawlEngine
         if (!$source) {
             return ['ok' => false, 'message' => 'منبع در پایگاه نیست.', 'slug' => $slug];
         }
-        if (empty($source['is_enabled']) || $slug === 'setaresim') {
+        if (empty($source['is_enabled']) || Inventory::isHiddenFromPanel($slug)) {
             return ['ok' => false, 'slug' => $slug, 'pass_status' => 'disabled', 'message' => 'منبع غیرفعال است.'];
         }
         // MySQL session lock survives long browser calls and is released on process death.

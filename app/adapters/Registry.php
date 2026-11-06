@@ -14,6 +14,8 @@ final class Registry
             return self::$map;
         }
 
+        // SetaresimAdapter is intentionally not registered: hidden from crawl/panel.
+        // Historical MySQL data for slug=setaresim is preserved.
         $files = [
             'RondIrAdapter.php',
             'TehransimAdapter.php',
@@ -24,7 +26,6 @@ final class Registry
             'CafesimcartAdapter.php',
             'Rond0912Adapter.php',
             'SimkhanAdapter.php',
-            'SetaresimAdapter.php',
             'JamsimkartAdapter.php',
             'RondbazAdapter.php',
             'Sim0912Adapter.php',
@@ -45,7 +46,6 @@ final class Registry
             new CafesimcartAdapter(),
             new Rond0912Adapter(),
             new SimkhanAdapter(),
-            new SetaresimAdapter(),
             new JamsimkartAdapter(),
             new RondbazAdapter(),
             new Sim0912Adapter(),

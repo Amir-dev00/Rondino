@@ -33,7 +33,9 @@ final class Crawler
     public function runRotatedBatch(bool $startFresh = false): array
     {
         $pdo = Database::pdo();
-        $sources = $pdo->query('SELECT id, slug FROM sources WHERE is_enabled = 1 ORDER BY id')->fetchAll();
+        $sources = $pdo->query(
+            'SELECT id, slug FROM sources s WHERE s.is_enabled = 1 AND ' . Inventory::panelVisibleSlugSql('s') . ' ORDER BY id'
+        )->fetchAll();
         if ($sources === []) {
             return ['done' => true, 'message' => 'منبعی نیست.', 'all_progress' => []];
         }
@@ -136,7 +138,7 @@ final class Crawler
             'contact_offers' => $stored['with_contact'],
         ];
 
-        if (empty($src['is_enabled']) || $slug === 'setaresim') {
+        if (empty($src['is_enabled']) || Inventory::isHiddenFromPanel($slug)) {
             return array_merge([
                 'slug' => $slug,
                 'name' => $src['name'] ?? $slug,
