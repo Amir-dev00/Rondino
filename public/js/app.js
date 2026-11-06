@@ -271,5 +271,28 @@
   }
 
   if (qs('#market-filter-form')) bindMarketPage();
+
+  function bindShellNav() {
+    var toggle = qs('#nav-toggle');
+    var sidebar = qs('#sidebar');
+    var backdrop = qs('#sidebar-backdrop');
+    if (!toggle || !sidebar) return;
+    function close() {
+      sidebar.classList.remove('open');
+      if (backdrop) backdrop.hidden = true;
+      document.body.classList.remove('nav-open');
+    }
+    function open() {
+      sidebar.classList.add('open');
+      if (backdrop) backdrop.hidden = false;
+      document.body.classList.add('nav-open');
+    }
+    toggle.addEventListener('click', function () {
+      if (sidebar.classList.contains('open')) close();
+      else open();
+    });
+    if (backdrop) backdrop.addEventListener('click', close);
+  }
+  bindShellNav();
 })();
 

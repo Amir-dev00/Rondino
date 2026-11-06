@@ -12,6 +12,8 @@ require_once __DIR__ . '/Http.php';
 require_once __DIR__ . '/Database.php';
 require_once __DIR__ . '/Auth.php';
 require_once __DIR__ . '/Csrf.php';
+require_once __DIR__ . '/Pagination.php';
+require_once __DIR__ . '/Inventory.php';
 require_once __DIR__ . '/CrawlMetrics.php';
 require_once __DIR__ . '/OfferStore.php';
 require_once __DIR__ . '/Estimator.php';

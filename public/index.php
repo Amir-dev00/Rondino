@@ -5,7 +5,7 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . '/app/bootstrap.php';
 
 $configPath = config_path();
-$route = get_q('r', 'market') ?: 'market';
+$route = get_q('r', 'dashboard') ?: 'dashboard';
 
 // cPanel one-time setup (before config may fully work for admin creation)
 if ($route === 'setup') {
@@ -36,7 +36,7 @@ if ($route === 'login') {
         $email = (string) post('email', '');
         $password = (string) post('password', '');
         if (Auth::attempt($email, $password)) {
-            redirect('/?r=market');
+            redirect('/?r=dashboard');
         }
         flash_set('error', 'ایمیل یا رمز عبور نادرست است.');
         redirect('/?r=login');
@@ -134,10 +134,16 @@ if ($route === 'deal' && request_is_post()) {
 }
 
 $view = match ($route) {
+    'dashboard' => 'dashboard.php',
+    'market' => 'market.php',
+    'search' => 'search.php',
+    'contacts' => 'contacts.php',
+    'source' => 'source_inventory.php',
+    'sim' => 'sim_detail.php',
     'estimate' => 'estimate.php',
     'deals' => 'deals.php',
     'sources' => 'sources.php',
-    default => 'market.php',
+    default => 'dashboard.php',
 };
 
 require dirname(__DIR__) . '/views/' . $view;

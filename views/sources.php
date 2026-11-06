@@ -114,7 +114,8 @@ ob_start();
             <span class="status-ok-text js-err">بدون خطای اخیر</span>
           <?php endif; ?>
         </td>
-        <td>
+        <td class="actions-cell">
+          <a class="secondary btn-like" href="/?r=source&amp;slug=<?= e(urlencode((string) $s['slug'])) ?>">موجودی</a>
           <button type="button" class="secondary btn-refresh-one" data-slug="<?= e($s['slug']) ?>" data-csrf="<?= e($csrf) ?>">به‌روزرسانی</button>
         </td>
       </tr>
