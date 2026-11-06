@@ -58,7 +58,7 @@ ob_start();
   <article class="stat-card muted-card"><div class="stat-label">بدون تماس</div><div class="stat-value ltr-num"><?= number_format($st['without_contact']) ?></div></article>
   <article class="stat-card"><div class="stat-label">رکورد تلفن</div><div class="stat-value ltr-num"><?= number_format($st['phone_records']) ?></div></article>
   <article class="stat-card">
-    <div class="stat-label">آخرین خزش موفق</div>
+    <div class="stat-label">آخرین به‌روزرسانی موفق</div>
     <div class="stat-value small"><?= $source['last_success_at'] ? fa_datetime($source['last_success_at']) : '—' ?></div>
   </article>
 </div>

@@ -13,223 +13,263 @@ foreach ($crawler->allProgress() as $p) {
     $progressBySlug[$p['slug']] = $p;
 }
 
+$activeCount = 0;
+$totalOffers = 0;
+$totalSims = 0;
 $latestSuccess = null;
+$receivingNow = [];
 foreach ($sources as $s) {
+    if ((int) $s['is_enabled']) {
+        $activeCount++;
+    }
+    $prog = $progressBySlug[$s['slug']] ?? null;
+    $totalOffers += (int) ($prog['db_stored_offers'] ?? 0);
+    $totalSims += (int) ($prog['db_unique_sims'] ?? $prog['db_unique_offers'] ?? 0);
     if (!empty($s['last_success_at']) && ($latestSuccess === null || $s['last_success_at'] > $latestSuccess)) {
         $latestSuccess = $s['last_success_at'];
+    }
+    if (($prog['user_status'] ?? '') === CrawlStatusCopy::STATUS_RECEIVING) {
+        $receivingNow[] = $prog;
     }
 }
 
 /**
- * Compact metric chip with Persian label + optional tooltip.
+ * Host-only display for English base URLs.
  */
-function source_metric(string $label, string $valueHtml, string $tip, string $jsClass = ''): string
+function source_host_label(string $url): string
 {
-    $cls = 'source-metric' . ($jsClass !== '' ? ' ' . $jsClass : '');
-    return '<div class="' . e($cls) . '" title="' . e($tip) . '">'
-        . '<span class="source-metric-label">' . e($label)
-        . ' <span class="metric-tip" aria-label="' . e($tip) . '">؟</span></span>'
-        . '<span class="source-metric-value ltr-num">' . $valueHtml . '</span>'
-        . '</div>';
+    $host = parse_url($url, PHP_URL_HOST);
+    return is_string($host) && $host !== '' ? $host : $url;
 }
 
 ob_start();
 ?>
 <div class="page-head">
   <div>
-    <h1>وضعیت منابع و خزش</h1>
-    <p class="page-meta">آمار اجرای فعلی از آمار ذخیره‌شده در دیتابیس جداست · آخرین موفقیت کلی: <?= $latestSuccess ? fa_datetime($latestSuccess) : '—' ?></p>
+    <h1>سایت‌ها</h1>
+    <p class="page-meta">وضعیت دریافت آگهی از وب‌سایت‌های متصل</p>
   </div>
 </div>
 
-<div class="panel">
+<section class="sources-overview" aria-label="خلاصه">
+  <article class="sources-overview-item">
+    <div class="sources-overview-label">سایت‌های فعال</div>
+    <div class="sources-overview-value ltr-num"><?= number_format($activeCount) ?></div>
+  </article>
+  <article class="sources-overview-item">
+    <div class="sources-overview-label">کل آگهی‌های ذخیره‌شده</div>
+    <div class="sources-overview-value ltr-num"><?= number_format($totalOffers) ?></div>
+  </article>
+  <article class="sources-overview-item">
+    <div class="sources-overview-label">شماره‌های مختلف</div>
+    <div class="sources-overview-value ltr-num"><?= number_format($totalSims) ?></div>
+  </article>
+  <article class="sources-overview-item">
+    <div class="sources-overview-label">آخرین به‌روزرسانی</div>
+    <div class="sources-overview-value sources-overview-time"><?= $latestSuccess ? fa_datetime($latestSuccess) : '—' ?></div>
+  </article>
+</section>
+
+<div class="panel sources-toolbar-panel">
   <input type="hidden" id="page-csrf" name="_csrf" value="<?= e($csrf) ?>">
   <div class="sources-toolbar">
     <div class="actions">
-      <button type="button" id="btn-refresh-all" data-csrf="<?= e($csrf) ?>">به‌روزرسانی همه</button>
-      <button type="button" id="btn-pause-all" class="secondary" hidden>توقف دسته‌ها</button>
+      <button type="button" id="btn-refresh-all" data-csrf="<?= e($csrf) ?>">به‌روزرسانی همه سایت‌ها</button>
+      <button type="button" id="btn-pause-all" class="secondary" hidden>توقف دریافت اطلاعات</button>
     </div>
-    <span class="muted" id="refresh-status">دسته‌های کوتاه؛ بستن تب کار را متوقف می‌کند و با بازگشت از همان نقطه ادامه می‌دهد.</span>
+    <span class="muted" id="refresh-status">با باز بودن این صفحه، سایت‌های سررسید‌شده هر <?= (int) $autoMin ?> دقیقه یک‌بار بررسی می‌شوند.</span>
   </div>
   <div class="progress" id="refresh-progress" hidden><span></span></div>
-  <div id="refresh-detail" class="muted" style="margin-top:.6rem;white-space:pre-line"></div>
-  <p class="muted" style="margin:0">با باز بودن این صفحه، منابع سررسید‌شده هر <?= (int) $autoMin ?> دقیقه یک‌بار به‌روز می‌شوند.</p>
+  <div id="refresh-detail" class="muted sources-refresh-detail" hidden></div>
 </div>
 
-<div class="sources-legend panel">
-  <strong>راهنمای کوتاه:</strong>
-  <span><b>اجرای فعلی</b> = نتیجه همین خزش</span>
-  <span><b>موجودی ذخیره‌شده</b> = کل سوابق MySQL برای همین منبع</span>
-</div>
-
-<div class="panel sources-panel">
-  <table class="table sources-table" id="sources-table">
-    <thead>
-      <tr>
-        <th>منبع</th>
-        <th>اجرای فعلی خزش</th>
-        <th>موجودی ذخیره‌شده در دیتابیس</th>
-        <th>سلامت منبع</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-    <?php foreach ($sources as $s):
-        $hasError = !empty($s['last_error']);
-        $okRecent = !empty($s['last_success_at']) && !$hasError;
-        $prog = $progressBySlug[$s['slug']] ?? null;
-        $passOffers = (int) ($prog['unique_offers_pass'] ?? $prog['offers_found'] ?? $s['last_offers_found'] ?? 0);
-        $inserted = (int) ($prog['inserted_pass'] ?? 0);
-        $updated = (int) ($prog['updated_pass'] ?? 0);
-        $pages = (int) ($prog['pages_fetched'] ?? 0);
-        $simsPass = (int) ($prog['distinct_sims_pass'] ?? 0);
-        $batchOffers = (int) ($prog['last_batch_offers'] ?? 0);
-        $dbOffers = (int) ($prog['db_stored_offers'] ?? 0);
-        $dbSims = (int) ($prog['db_unique_sims'] ?? $prog['db_unique_offers'] ?? 0);
-        $dbWithContact = (int) ($prog['db_offers_with_contact'] ?? $prog['contact_offers'] ?? 0);
-        $dbPhones = (int) ($prog['db_phone_records'] ?? 0);
+<section
+  id="sources-activity"
+  class="panel sources-activity<?= $receivingNow === [] ? ' is-empty' : '' ?>"
+  aria-live="polite"
+  <?= $receivingNow === [] ? 'hidden' : '' ?>
+>
+  <h2 class="sources-activity-title">فعالیت جاری</h2>
+  <div id="sources-activity-body">
+    <?php if ($receivingNow !== []):
+        $act = $receivingNow[0];
+        $pct = $act['progress_pct'] ?? null;
     ?>
-      <tr data-slug="<?= e($s['slug']) ?>" data-interval="<?= (int) $s['refresh_interval_minutes'] ?>" data-success="<?= e($s['last_success_at'] ?? '') ?>">
-        <td class="source-identity">
-          <strong><?= e($s['name']) ?></strong>
-          <div class="muted" style="overflow-wrap:anywhere"><?= e($s['base_url']) ?></div>
-          <?php if (!(int) $s['is_enabled']): ?>
-            <span class="nav-badge" style="color:var(--warn)">خاموش</span>
-          <?php endif; ?>
-        </td>
+      <div class="sources-activity-row">
+        <strong class="js-activity-name"><?= e((string) ($act['name'] ?? $act['slug'])) ?></strong>
+        <span class="muted js-activity-summary"><?= e((string) ($act['user_summary'] ?? 'در حال دریافت اطلاعات')) ?></span>
+      </div>
+      <div
+        class="sources-progress<?= $pct === null ? ' is-indeterminate' : '' ?>"
+        id="sources-activity-bar"
+        role="progressbar"
+        <?= $pct !== null ? 'aria-valuenow="' . (int) $pct . '" aria-valuemin="0" aria-valuemax="100"' : 'aria-valuetext="در حال دریافت"' ?>
+      ><span style="<?= $pct !== null ? 'width:' . (int) $pct . '%' : '' ?>"></span></div>
+      <div class="muted sources-activity-meta">
+        <span class="js-activity-line"><?= e((string) ($act['user_activity'] ?: 'دریافت اطلاعات در جریان است.')) ?></span>
+        <span class="js-activity-updated">آخرین تأیید: <?= e((string) ($act['updated_at_fa'] ?? '—')) ?></span>
+      </div>
+    <?php endif; ?>
+  </div>
+</section>
 
-        <td class="js-pass-cell source-stats-cell">
-          <div class="source-stat-block current">
-            <div class="source-stat-block-title">اجرای فعلی</div>
-            <div><strong class="js-pass-status"><?= e((string) ($prog['status_fa'] ?? '—')) ?></strong></div>
-            <div class="muted js-pass-label"><?= e((string) ($prog['progress_label'] ?? '—')) ?></div>
-            <div class="source-metric-grid">
-              <?= source_metric(
-                  'آگهی‌های یکتای اجرای فعلی',
-                  (string) $passOffers,
-                  'تعداد آگهی‌های یکتایی که در همین گذر خزش شناسایی شده‌اند. این عدد کل موجودی تاریخی نیست.',
-                  'js-metric-pass-offers'
-              ) ?>
-              <?= source_metric(
-                  'سیم‌کارت یکتای این گذر',
-                  (string) $simsPass,
-                  'تعداد شماره سیم‌کارت‌های متمایزی که در همین گذر دیده شده‌اند.',
-                  'js-metric-pass-sims'
-              ) ?>
-              <?= source_metric(
-                  'جدید ثبت‌شده',
-                  (string) $inserted,
-                  'آگهی‌هایی که در این گذر برای اولین‌بار در دیتابیس درج شده‌اند (در صورت پشتیبانی مسیر افزایشی).',
-                  'js-metric-inserted'
-              ) ?>
-              <?= source_metric(
-                  'به‌روزرسانی‌شده',
-                  (string) $updated,
-                  'آگهی‌های از قبل موجود که در این گذر دوباره دیده و به‌روز شده‌اند.',
-                  'js-metric-updated'
-              ) ?>
-              <?= source_metric(
-                  'صفحات دریافت‌شده',
-                  (string) $pages,
-                  'تعداد صفحاتی که در این گذر از منبع خوانده شده است.',
-                  'js-metric-pages'
-              ) ?>
-              <?= source_metric(
-                  'آگهی در آخرین دسته',
-                  (string) $batchOffers,
-                  'تعداد آگهی در آخرین دستهٔ پردازش‌شدهٔ این گذر.',
-                  'js-metric-batch'
-              ) ?>
-            </div>
-            <div class="muted js-metric-batch-time source-subline">
-              زمان آخرین دسته: <?= !empty($prog['last_batch_at']) ? fa_datetime($prog['last_batch_at']) : '—' ?>
-            </div>
-            <div class="muted js-pass-coverage source-subline">
+<div class="sources-list" id="sources-table">
+  <?php foreach ($sources as $s):
+      $prog = $progressBySlug[$s['slug']] ?? null;
+      $userStatus = (string) ($prog['user_status'] ?? CrawlStatusCopy::STATUS_NEVER);
+      $statusLabel = (string) ($prog['user_status_label'] ?? CrawlStatusCopy::statusLabel($userStatus));
+      $summary = (string) ($prog['user_summary'] ?? '');
+      $next = (string) ($prog['user_next'] ?? '');
+      $passOffers = (int) ($prog['unique_offers_pass'] ?? $prog['offers_found'] ?? $s['last_offers_found'] ?? 0);
+      $inserted = (int) ($prog['inserted_pass'] ?? 0);
+      $showInserted = is_array($prog) && array_key_exists('inserted_pass', $prog);
+      $pages = (int) ($prog['pages_fetched'] ?? 0);
+      $updatedPass = (int) ($prog['updated_pass'] ?? 0);
+      $simsPass = (int) ($prog['distinct_sims_pass'] ?? 0);
+      $batchOffers = (int) ($prog['last_batch_offers'] ?? 0);
+      $dbOffers = (int) ($prog['db_stored_offers'] ?? 0);
+      $dbSims = (int) ($prog['db_unique_sims'] ?? $prog['db_unique_offers'] ?? 0);
+      $dbWithContact = (int) ($prog['db_offers_with_contact'] ?? $prog['contact_offers'] ?? 0);
+      $dbPhones = (int) ($prog['db_phone_records'] ?? 0);
+      $stopRaw = (string) ($prog['stop_reason_raw'] ?? $prog['stop_reason'] ?? '');
+      $hasError = !empty($prog['last_error']) || !empty($s['last_error']);
+      $errText = (string) ($prog['last_error'] ?? $s['last_error'] ?? '');
+      $enabled = (int) $s['is_enabled'] === 1;
+  ?>
+  <article
+    class="source-card"
+    data-slug="<?= e($s['slug']) ?>"
+    data-interval="<?= (int) $s['refresh_interval_minutes'] ?>"
+    data-success="<?= e($s['last_success_at'] ?? '') ?>"
+    data-user-status="<?= e($userStatus) ?>"
+  >
+    <header class="source-card-head">
+      <div class="source-identity">
+        <strong class="source-name"><?= e($s['name']) ?></strong>
+        <div class="muted source-host ltr-num" dir="ltr"><?= e(source_host_label((string) $s['base_url'])) ?></div>
+      </div>
+      <span class="source-status source-status-<?= e($userStatus) ?> js-pass-status"><?= e($statusLabel) ?></span>
+    </header>
+
+    <p class="source-summary js-user-summary"><?= e($summary) ?></p>
+    <?php if ($next !== ''): ?>
+      <p class="source-next muted js-user-next"><?= e($next) ?></p>
+    <?php else: ?>
+      <p class="source-next muted js-user-next" hidden></p>
+    <?php endif; ?>
+
+    <div class="source-metrics">
+      <div class="source-metric js-metric-db-offers">
+        <span class="source-metric-label">کل آگهی‌های ذخیره‌شده</span>
+        <span class="source-metric-value ltr-num"><?= number_format($dbOffers) ?></span>
+      </div>
+      <div class="source-metric js-metric-db-sims">
+        <span class="source-metric-label">شماره‌های مختلف</span>
+        <span class="source-metric-value ltr-num"><?= number_format($dbSims) ?></span>
+      </div>
+      <div class="source-metric js-metric-pass-offers">
+        <span class="source-metric-label">آگهی‌های این بررسی</span>
+        <span class="source-metric-value ltr-num"><?= number_format($passOffers) ?></span>
+      </div>
+      <div class="source-metric js-metric-inserted"<?= $showInserted ? '' : ' hidden' ?>>
+        <span class="source-metric-label">آگهی‌های جدید</span>
+        <span class="source-metric-value ltr-num"><?= number_format($inserted) ?></span>
+      </div>
+      <div class="source-metric source-metric-wide">
+        <span class="source-metric-label">آخرین به‌روزرسانی موفق</span>
+        <span class="source-metric-value js-last-success"><?= !empty($s['last_success_at']) ? fa_datetime($s['last_success_at']) : '—' ?></span>
+      </div>
+    </div>
+
+    <div class="source-card-actions">
+      <a class="secondary btn-like" href="/?r=source&amp;slug=<?= e(urlencode((string) $s['slug'])) ?>">مشاهده شماره‌ها</a>
+      <?php if ($enabled): ?>
+        <button type="button" class="btn-refresh-one" data-slug="<?= e($s['slug']) ?>" data-csrf="<?= e($csrf) ?>">به‌روزرسانی اطلاعات</button>
+      <?php endif; ?>
+      <?php if ($hasError): ?>
+        <button type="button" class="secondary js-toggle-error" data-target="err-<?= e($s['slug']) ?>">مشاهده خطا</button>
+      <?php endif; ?>
+    </div>
+
+    <?php if ($hasError): ?>
+      <div class="source-error js-err-block" id="err-<?= e($s['slug']) ?>" hidden>
+        <span class="status-fail js-err"><?= e($errText) ?></span>
+      </div>
+    <?php else: ?>
+      <div class="source-error js-err-block" hidden>
+        <span class="js-err"></span>
+      </div>
+    <?php endif; ?>
+
+    <details class="source-details">
+      <summary>جزئیات بیشتر</summary>
+      <div class="source-details-body">
+        <div class="source-details-grid">
+          <div class="source-metric js-metric-pass-sims">
+            <span class="source-metric-label">شماره‌های این بررسی</span>
+            <span class="source-metric-value ltr-num"><?= number_format($simsPass) ?></span>
+          </div>
+          <div class="source-metric js-metric-updated">
+            <span class="source-metric-label">آگهی‌های به‌روزشده</span>
+            <span class="source-metric-value ltr-num"><?= number_format($updatedPass) ?></span>
+          </div>
+          <div class="source-metric js-metric-pages">
+            <span class="source-metric-label">صفحات بررسی‌شده</span>
+            <span class="source-metric-value ltr-num"><?= number_format($pages) ?></span>
+          </div>
+          <div class="source-metric js-metric-batch">
+            <span class="source-metric-label">آگهی در آخرین دسته</span>
+            <span class="source-metric-value ltr-num"><?= number_format($batchOffers) ?></span>
+          </div>
+          <div class="source-metric js-metric-db-with-contact">
+            <span class="source-metric-label">آگهی دارای تماس</span>
+            <span class="source-metric-value ltr-num"><?= number_format($dbWithContact) ?></span>
+          </div>
+          <div class="source-metric js-metric-db-phones">
+            <span class="source-metric-label">شماره تماس ذخیره‌شده</span>
+            <span class="source-metric-value ltr-num"><?= number_format($dbPhones) ?></span>
+          </div>
+        </div>
+        <div class="muted source-subline js-metric-batch-time">
+          زمان آخرین دسته: <?= !empty($prog['last_batch_at'] ?? null) ? fa_datetime((string) $prog['last_batch_at']) : '—' ?>
+        </div>
+        <div class="muted source-subline js-pass-retry">
+          تلاش بعدی: <?= e((string) ($prog['next_retry_at_fa'] ?? '—')) ?>
+        </div>
+        <details class="source-tech">
+          <summary>جزئیات فنی</summary>
+          <div class="source-tech-body muted">
+            <div>وضعیت داخلی: <span class="ltr-num js-tech-status"><?= e((string) ($prog['status'] ?? '—')) ?></span></div>
+            <div>دلیل توقف: <span class="ltr-num js-tech-stop"><?= e($stopRaw !== '' ? $stopRaw : '—') ?></span></div>
+            <div class="js-pass-label">برچسب پیشرفت: <?= e((string) ($prog['progress_label'] ?? '—')) ?></div>
+            <div class="js-pass-coverage">
               <?php
-                $covComplete = !empty($prog['inventory_path']);
-                $covScope = (string) ($prog['coverage_scope'] ?? '');
-                if ($covComplete) {
-                    echo 'پوشش: موجودی لیست API';
+                if (!empty($prog['inventory_path'])) {
+                    echo 'مسیر پوشش: فهرست کامل سایت';
                     if (!empty($prog['source_total_elements'])) {
-                        echo ' · اعلام منبع: ' . (int) $prog['source_total_elements'];
+                        echo ' · اعلام سایت: ' . number_format((int) $prog['source_total_elements']);
                     }
-                } elseif ($covScope === 'homepage_or_html_sample') {
-                    echo 'پوشش: نمونه صفحه اصلی (موجودی کامل نیست)';
-                } elseif ($covScope !== '') {
-                    echo 'پوشش: ' . e($covScope);
+                } elseif (($prog['coverage_scope'] ?? '') === 'homepage_or_html_sample') {
+                    echo 'مسیر پوشش: نمونه صفحه اصلی';
+                } elseif (!empty($prog['coverage_scope'])) {
+                    echo 'مسیر پوشش: ' . e((string) $prog['coverage_scope']);
                 } else {
-                    echo 'پوشش: هنوز مشخص نشده';
-                }
-                if (!empty($prog['stop_reason'])) {
-                    echo ' · توقف: ' . e((string) $prog['stop_reason']);
+                    echo 'مسیر پوشش: هنوز مشخص نشده';
                 }
               ?>
             </div>
-            <?php /* Keep legacy hooks for JS that still targets these classes */ ?>
-            <div class="js-pass-stats" hidden></div>
-            <div class="js-pass-contact" hidden></div>
-            <div class="js-pass-db" hidden></div>
-            <div class="js-offers-found" hidden><?= $passOffers ?></div>
           </div>
-        </td>
+        </details>
+      </div>
+    </details>
 
-        <td class="source-stats-cell">
-          <div class="source-stat-block stored">
-            <div class="source-stat-block-title">موجودی ذخیره‌شده</div>
-            <div class="source-metric-grid">
-              <?= source_metric(
-                  'کل آگهی‌های ذخیره‌شده',
-                  (string) $dbOffers,
-                  'تعداد کل رکوردهای آگهی این منبع در MySQL، مستقل از گذر فعلی.',
-                  'js-metric-db-offers'
-              ) ?>
-              <?= source_metric(
-                  'کل سیم‌کارت‌های یکتای ذخیره‌شده',
-                  (string) $dbSims,
-                  'تعداد شماره سیم‌کارت‌های متمایز مرتبط با این منبع در دیتابیس، صرف‌نظر از تعداد آگهی هر شماره.',
-                  'js-metric-db-sims'
-              ) ?>
-              <?= source_metric(
-                  'آگهی دارای تماس تأییدشده',
-                  (string) $dbWithContact,
-                  'تعداد آگهی‌هایی از این منبع که حداقل یک شماره فروشندهٔ ذخیره‌شده دارند.',
-                  'js-metric-db-with-contact'
-              ) ?>
-              <?= source_metric(
-                  'رکوردهای تلفن فروشنده',
-                  (string) $dbPhones,
-                  'تعداد کل شماره‌های تماس فروشندهٔ ذخیره‌شده برای آگهی‌های این منبع.',
-                  'js-metric-db-phones'
-              ) ?>
-            </div>
-          </div>
-        </td>
-
-        <td class="source-stats-cell">
-          <div class="source-stat-block health">
-            <div class="source-stat-block-title">سلامت</div>
-            <div class="last-success <?= $okRecent ? 'status-ok-text' : '' ?>">
-              موفقیت: <?= fa_datetime($s['last_success_at']) ?>
-            </div>
-            <div class="muted js-pass-retry">تلاش بعدی: <?= e((string) ($prog['next_retry_at_fa'] ?? '—')) ?></div>
-            <div class="last-error" style="margin-top:.35rem">
-              <?php if ($hasError): ?>
-                <span class="status-fail js-err"><?= e($s['last_error']) ?></span>
-              <?php else: ?>
-                <span class="status-ok-text js-err">بدون خطای اخیر</span>
-              <?php endif; ?>
-            </div>
-          </div>
-        </td>
-
-        <td class="actions-cell">
-          <a class="secondary btn-like" href="/?r=source&amp;slug=<?= e(urlencode((string) $s['slug'])) ?>">موجودی کامل</a>
-          <button type="button" class="secondary btn-refresh-one" data-slug="<?= e($s['slug']) ?>" data-csrf="<?= e($csrf) ?>">به‌روزرسانی</button>
-        </td>
-      </tr>
-    <?php endforeach; ?>
-    </tbody>
-  </table>
+    <?php /* Legacy hooks for older JS consumers */ ?>
+    <div class="js-pass-stats" hidden></div>
+    <div class="js-pass-contact" hidden></div>
+    <div class="js-pass-db" hidden></div>
+    <div class="js-offers-found" hidden><?= $passOffers ?></div>
+  </article>
+  <?php endforeach; ?>
 </div>
 <script>
 window.RONDINO_AUTO_REFRESH_MINUTES = <?= (int) $autoMin ?>;
@@ -237,6 +277,6 @@ window.RONDINO_CSRF = <?= json_encode($csrf, JSON_UNESCAPED_UNICODE) ?>;
 </script>
 <?php
 $content = ob_get_clean();
-$title = 'وضعیت منابع — روندینو';
+$title = 'سایت‌ها — روندینو';
 $active = 'sources';
 require __DIR__ . '/layout.php';

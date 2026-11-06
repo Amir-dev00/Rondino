@@ -68,7 +68,7 @@ ob_start();
 <section class="panel">
   <div class="panel-head">
     <h2>میان‌بر موجودی منابع</h2>
-    <a href="/?r=sources">مدیریت خزش</a>
+    <a href="/?r=sources">سایت‌ها</a>
   </div>
   <div class="source-tiles">
     <?php foreach ($sources as $s):
@@ -81,7 +81,7 @@ ob_start();
           <?= number_format($st['unique_sims']) ?> شماره ·
           <?= number_format($st['with_contact']) ?> با تماس
         </div>
-        <div class="support"><?= $s['last_success_at'] ? fa_datetime($s['last_success_at']) : 'هنوز خزش موفق نیست' ?></div>
+        <div class="support"><?= $s['last_success_at'] ? fa_datetime($s['last_success_at']) : 'هنوز به‌روزرسانی نشده' ?></div>
       </a>
     <?php endforeach; ?>
   </div>

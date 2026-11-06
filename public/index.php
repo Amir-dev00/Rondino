@@ -84,7 +84,7 @@ if ($route === 'refresh' && request_is_post()) {
             'worker' => true,
             'done' => in_array((string) ($job['status'] ?? ''), ['completed', 'failed', 'cancelled'], true),
             'job' => $job,
-            'message' => 'کار به کارگر محلی سپرده شد؛ پیشرفت از MySQL خوانده می‌شود.',
+            'message' => 'به‌روزرسانی در پس‌زمینه شروع شد؛ پیشرفت همین‌جا نمایش داده می‌شود.',
             'all_progress' => $crawler->allProgress(),
         ], JSON_UNESCAPED_UNICODE);
         exit;

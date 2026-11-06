@@ -36,7 +36,7 @@ if ($user) {
       <a class="<?= ($active ?? '') === 'market' ? 'active' : '' ?>" href="/?r=market">بازار سراسری</a>
       <a class="<?= ($active ?? '') === 'search' ? 'active' : '' ?>" href="/?r=search">جست‌وجوی پیشرفته</a>
       <a class="<?= ($active ?? '') === 'contacts' ? 'active' : '' ?>" href="/?r=contacts">دفترچه تماس</a>
-      <a class="<?= ($active ?? '') === 'sources' ? 'active' : '' ?>" href="/?r=sources">وضعیت خزش</a>
+      <a class="<?= ($active ?? '') === 'sources' ? 'active' : '' ?>" href="/?r=sources">سایت‌ها</a>
       <a class="<?= ($active ?? '') === 'estimate' ? 'active' : '' ?>" href="/?r=estimate">تخمین قیمت</a>
       <a class="<?= ($active ?? '') === 'deals' ? 'active' : '' ?>" href="/?r=deals">معاملات تیم</a>
     </nav>

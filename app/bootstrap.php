@@ -15,6 +15,7 @@ require_once __DIR__ . '/Csrf.php';
 require_once __DIR__ . '/Pagination.php';
 require_once __DIR__ . '/Inventory.php';
 require_once __DIR__ . '/CrawlMetrics.php';
+require_once __DIR__ . '/CrawlStatusCopy.php';
 require_once __DIR__ . '/OfferStore.php';
 require_once __DIR__ . '/Estimator.php';
 require_once __DIR__ . '/adapters/AdapterInterface.php';

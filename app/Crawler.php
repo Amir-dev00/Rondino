@@ -139,11 +139,10 @@ final class Crawler
         ];
 
         if (empty($src['is_enabled']) || Inventory::isHiddenFromPanel($slug)) {
-            return array_merge([
+            return $this->withUserCopy(array_merge([
                 'slug' => $slug,
                 'name' => $src['name'] ?? $slug,
                 'status' => 'disabled',
-                'status_fa' => 'غیرفعال',
                 'offers_found' => 0,
                 'unique_offers_pass' => 0,
                 'inserted_pass' => 0,
@@ -154,19 +153,21 @@ final class Crawler
                 'last_batch_at_fa' => '—',
                 'progress_label' => 'منبع غیرفعال است',
                 'last_error' => $src['last_error'] ?? null,
+                'last_success_at' => $src['last_success_at'] ?? null,
+                'last_success_at_fa' => Jalali::formatDateTime($src['last_success_at'] ?? null),
                 'next_retry_at_fa' => '—',
                 'coverage_scope' => '',
                 'inventory_path' => false,
                 'stop_reason' => null,
                 'source_total_elements' => null,
-            ], $inventoryFields);
+                'source_total_pages' => null,
+            ], $inventoryFields));
         }
         if (!$pass) {
-            return array_merge([
+            return $this->withUserCopy(array_merge([
                 'slug' => $slug,
                 'name' => $src['name'] ?? $slug,
                 'status' => 'idle',
-                'status_fa' => 'آماده',
                 'seed_index' => 0,
                 'page_index' => 0,
                 'seed_total' => $seedCount,
@@ -182,6 +183,7 @@ final class Crawler
                 'stop_reason' => null,
                 'inventory_path' => false,
                 'source_total_elements' => null,
+                'source_total_pages' => null,
                 'last_batch_offers' => 0,
                 'last_batch_at' => null,
                 'last_batch_at_fa' => '—',
@@ -190,18 +192,12 @@ final class Crawler
                 'next_retry_at_fa' => '—',
                 'updated_at' => null,
                 'updated_at_fa' => '—',
-            ], $inventoryFields);
+                'last_success_at' => $src['last_success_at'] ?? null,
+                'last_success_at_fa' => Jalali::formatDateTime($src['last_success_at'] ?? null),
+            ], $inventoryFields));
         }
 
         $status = (string) $pass['status'];
-        $statusFa = match ($status) {
-            'running' => 'در حال اجرا',
-            'paused' => 'متوقف موقت',
-            'completed' => 'کامل',
-            'blocked' => 'ناموفق',
-            'partial' => 'ناقص',
-            default => $status,
-        };
 
         $branchErrors = [];
         if (!empty($pass['branch_errors'])) {
@@ -224,11 +220,10 @@ final class Crawler
             $distinctSimsPass = count($seenSims);
         }
 
-        return array_merge([
+        return $this->withUserCopy(array_merge([
             'slug' => $slug,
             'name' => $src['name'] ?? $slug,
             'status' => $status,
-            'status_fa' => $statusFa,
             'seed_index' => (int) $pass['seed_index'],
             'page_index' => (int) $pass['page_index'],
             'seed_total' => $seedCount,
@@ -262,7 +257,20 @@ final class Crawler
             'current_url' => $pass['current_url'],
             'last_success_at' => $src['last_success_at'] ?? null,
             'last_success_at_fa' => Jalali::formatDateTime($src['last_success_at'] ?? null),
-        ], $inventoryFields);
+        ], $inventoryFields));
+    }
+
+    /**
+     * Attach plain-language Persian status fields for the Sources panel / JSON pollers.
+     * @param array<string,mixed> $snap
+     * @return array<string,mixed>
+     */
+    private function withUserCopy(array $snap): array
+    {
+        $copy = CrawlStatusCopy::enrich($snap);
+        // Keep raw stop_reason for technical details; expose stop_reason_raw explicitly too.
+        $snap['stop_reason_raw'] = $copy['stop_reason_raw'];
+        return array_merge($snap, $copy);
     }
 }
 

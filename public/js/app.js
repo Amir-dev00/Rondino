@@ -14,36 +14,118 @@
     return res.json();
   }
 
+  function formatCount(n) {
+    try {
+      return Number(n || 0).toLocaleString('en-US');
+    } catch (e) {
+      return String(n || 0);
+    }
+  }
+
   function setMetricValue(row, cls, text) {
     var el = qs('.' + cls + ' .source-metric-value', row);
     if (el) el.textContent = String(text);
   }
 
+  function setStatusPill(row, p) {
+    var statusEl = qs('.js-pass-status', row);
+    if (!statusEl) return;
+    var label = p.user_status_label || p.status_fa || '';
+    var userStatus = p.user_status || '';
+    statusEl.textContent = label;
+    statusEl.className = 'source-status js-pass-status'
+      + (userStatus ? ' source-status-' + userStatus : '');
+    row.setAttribute('data-user-status', userStatus);
+  }
+
+  function updateActivityPanel(allProgress) {
+    var panel = qs('#sources-activity');
+    var body = qs('#sources-activity-body');
+    if (!panel || !body) return;
+    var receiving = (allProgress || []).filter(function (p) {
+      return p.user_status === 'receiving' || p.status === 'running';
+    });
+    if (!receiving.length) {
+      panel.hidden = true;
+      panel.classList.add('is-empty');
+      return;
+    }
+    panel.hidden = false;
+    panel.classList.remove('is-empty');
+    var act = receiving[0];
+    var pct = (typeof act.progress_pct === 'number') ? act.progress_pct : null;
+    var barClass = 'sources-progress' + (pct === null ? ' is-indeterminate' : '');
+    var barStyle = pct !== null ? ('width:' + pct + '%') : '';
+    body.innerHTML =
+      '<div class="sources-activity-row">'
+      + '<strong class="js-activity-name"></strong>'
+      + '<span class="muted js-activity-summary"></span>'
+      + '</div>'
+      + '<div class="' + barClass + '" id="sources-activity-bar" role="progressbar">'
+      + '<span style="' + barStyle + '"></span></div>'
+      + '<div class="muted sources-activity-meta">'
+      + '<span class="js-activity-line"></span>'
+      + '<span class="js-activity-updated"></span>'
+      + '</div>';
+    var nameEl = qs('.js-activity-name', body);
+    var sumEl = qs('.js-activity-summary', body);
+    var lineEl = qs('.js-activity-line', body);
+    var updEl = qs('.js-activity-updated', body);
+    if (nameEl) nameEl.textContent = act.name || act.slug || '';
+    if (sumEl) sumEl.textContent = act.user_summary || act.user_status_label || 'در حال دریافت اطلاعات';
+    if (lineEl) lineEl.textContent = act.user_activity || 'دریافت اطلاعات در جریان است.';
+    if (updEl) updEl.textContent = 'آخرین تأیید: ' + (act.updated_at_fa || '—');
+  }
+
   function applyProgressRows(allProgress) {
     if (!allProgress || !allProgress.length) return;
     allProgress.forEach(function (p) {
-      const row = qs('#sources-table tr[data-slug="' + p.slug + '"]');
+      const row = qs('#sources-table [data-slug="' + p.slug + '"]')
+        || qs('#sources-table tr[data-slug="' + p.slug + '"]');
       if (!row) return;
-      const statusEl = qs('.js-pass-status', row);
-      const labelEl = qs('.js-pass-label', row);
-      if (statusEl) statusEl.textContent = p.status_fa || p.status || '';
-      if (labelEl) labelEl.textContent = p.progress_label || '—';
+
+      setStatusPill(row, p);
+
+      var summaryEl = qs('.js-user-summary', row);
+      if (summaryEl && p.user_summary) summaryEl.textContent = p.user_summary;
+      var nextEl = qs('.js-user-next', row);
+      if (nextEl) {
+        if (p.user_next) {
+          nextEl.hidden = false;
+          nextEl.textContent = p.user_next;
+        } else {
+          nextEl.hidden = true;
+          nextEl.textContent = '';
+        }
+      }
 
       var passOffers = p.unique_offers_pass || p.offers_found || 0;
       var dbSims = p.db_unique_sims != null ? p.db_unique_sims : (p.db_unique_offers || 0);
       var dbOffers = p.db_stored_offers != null ? p.db_stored_offers : 0;
       var withContact = p.db_offers_with_contact != null ? p.db_offers_with_contact : (p.contact_offers || 0);
       var phones = p.db_phone_records != null ? p.db_phone_records : 0;
-      setMetricValue(row, 'js-metric-pass-offers', passOffers);
-      setMetricValue(row, 'js-metric-pass-sims', p.distinct_sims_pass || 0);
-      setMetricValue(row, 'js-metric-inserted', p.inserted_pass || 0);
-      setMetricValue(row, 'js-metric-updated', p.updated_pass || 0);
-      setMetricValue(row, 'js-metric-pages', p.pages_fetched || 0);
-      setMetricValue(row, 'js-metric-batch', p.last_batch_offers || 0);
-      setMetricValue(row, 'js-metric-db-offers', dbOffers);
-      setMetricValue(row, 'js-metric-db-sims', dbSims);
-      setMetricValue(row, 'js-metric-db-with-contact', withContact);
-      setMetricValue(row, 'js-metric-db-phones', phones);
+      var inserted = p.inserted_pass || 0;
+
+      setMetricValue(row, 'js-metric-pass-offers', formatCount(passOffers));
+      setMetricValue(row, 'js-metric-pass-sims', formatCount(p.distinct_sims_pass || 0));
+      setMetricValue(row, 'js-metric-inserted', formatCount(inserted));
+      setMetricValue(row, 'js-metric-updated', formatCount(p.updated_pass || 0));
+      setMetricValue(row, 'js-metric-pages', formatCount(p.pages_fetched || 0));
+      setMetricValue(row, 'js-metric-batch', formatCount(p.last_batch_offers || 0));
+      setMetricValue(row, 'js-metric-db-offers', formatCount(dbOffers));
+      setMetricValue(row, 'js-metric-db-sims', formatCount(dbSims));
+      setMetricValue(row, 'js-metric-db-with-contact', formatCount(withContact));
+      setMetricValue(row, 'js-metric-db-phones', formatCount(phones));
+
+      var insertedBlock = qs('.js-metric-inserted', row);
+      if (insertedBlock) {
+        insertedBlock.hidden = !(typeof p.inserted_pass !== 'undefined');
+      }
+
+      if (p.last_success_at_fa) {
+        var ls = qs('.js-last-success', row);
+        if (ls) ls.textContent = p.last_success_at_fa;
+      }
 
       var batchTimeEl = qs('.js-metric-batch-time', row);
       if (batchTimeEl) {
@@ -52,59 +134,61 @@
 
       var covEl = qs('.js-pass-coverage', row);
       if (covEl) {
-        var covText = 'پوشش: هنوز مشخص نشده';
+        var covText = 'مسیر پوشش: هنوز مشخص نشده';
         if (p.inventory_path) {
-          covText = 'پوشش: موجودی لیست API'
-            + (p.source_total_elements ? (' · اعلام منبع: ' + p.source_total_elements) : '');
+          covText = 'مسیر پوشش: فهرست کامل سایت'
+            + (p.source_total_elements ? (' · اعلام سایت: ' + formatCount(p.source_total_elements)) : '');
         } else if (p.coverage_scope === 'homepage_or_html_sample') {
-          covText = 'پوشش: نمونه صفحه اصلی (موجودی کامل نیست)';
+          covText = 'مسیر پوشش: نمونه صفحه اصلی';
         } else if (p.coverage_scope) {
-          covText = 'پوشش: ' + p.coverage_scope;
+          covText = 'مسیر پوشش: ' + p.coverage_scope;
         }
-        if (p.stop_reason) covText += ' · توقف: ' + p.stop_reason;
         covEl.textContent = covText;
       }
       var retryEl = qs('.js-pass-retry', row);
       if (retryEl) retryEl.textContent = 'تلاش بعدی: ' + (p.next_retry_at_fa || '—');
 
-      // Legacy hidden hooks stay in sync for any older UI consumers
+      var techStatus = qs('.js-tech-status', row);
+      if (techStatus) techStatus.textContent = p.status || '—';
+      var techStop = qs('.js-tech-stop', row);
+      if (techStop) techStop.textContent = p.stop_reason_raw || p.stop_reason || '—';
+      var labelEl = qs('.js-pass-label', row);
+      if (labelEl) labelEl.textContent = 'برچسب پیشرفت: ' + (p.progress_label || '—');
+
       var offersEl = qs('.js-offers-found', row);
       if (offersEl) offersEl.textContent = String(passOffers);
-      var statsEl = qs('.js-pass-stats', row);
-      if (statsEl) {
-        statsEl.textContent = 'آگهی‌های یکتای اجرای فعلی: ' + passOffers
-          + ' · صفحات: ' + (p.pages_fetched || 0)
-          + ' · آخرین دسته: ' + (p.last_batch_offers || 0);
-      }
-      var contactEl = qs('.js-pass-contact', row);
-      if (contactEl) {
-        contactEl.textContent = 'آگهی دارای تماس تأییدشده: ' + withContact
-          + ' · سیم‌کارت یکتای این گذر: ' + (p.distinct_sims_pass || 0);
-      }
-      var dbEl = qs('.js-pass-db', row);
-      if (dbEl) dbEl.textContent = 'کل سیم‌کارت‌های یکتای ذخیره‌شده: ' + dbSims;
 
       const err = qs('.js-err', row);
-      if (err) {
-        if (p.last_error) {
-          err.className = 'status-fail js-err';
-          err.textContent = p.last_error;
-        }
+      const errBlock = qs('.js-err-block', row);
+      if (err && p.last_error) {
+        err.className = 'status-fail js-err';
+        err.textContent = p.last_error;
+        if (errBlock) errBlock.hidden = false;
       }
     });
+    updateActivityPanel(allProgress);
   }
 
   function formatBatchMessage(data) {
     const r = data.result || data;
     const p = (r && r.progress) || {};
     const parts = [];
-    if (r && r.slug) parts.push('منبع: ' + r.slug);
-    if (p.status_fa) parts.push('وضعیت: ' + p.status_fa);
-    if (p.progress_label) parts.push(p.progress_label);
-    if (typeof p.offers_found !== 'undefined') parts.push('آگهی‌های یکتای اجرای فعلی: ' + p.offers_found);
-    if (typeof p.last_batch_offers !== 'undefined') parts.push('آگهی در آخرین دسته: ' + p.last_batch_offers);
-    if (r && r.message) parts.push(r.message);
+    if (p.name || (r && r.slug)) parts.push('سایت: ' + (p.name || r.slug));
+    if (p.user_status_label || p.status_fa) parts.push(p.user_status_label || p.status_fa);
+    if (p.user_summary) parts.push(p.user_summary);
+    else if (p.user_activity) parts.push(p.user_activity);
+    if (typeof p.unique_offers_pass !== 'undefined' || typeof p.offers_found !== 'undefined') {
+      parts.push('آگهی‌های این بررسی: ' + formatCount(p.unique_offers_pass || p.offers_found || 0));
+    }
+    if (p.inserted_pass) parts.push('آگهی‌های جدید: ' + formatCount(p.inserted_pass));
+    if (r && r.message && !/یکتا|خزش|گذر|API|MySQL|کارگر|SSR|DB\b/i.test(String(r.message))) {
+      parts.push(r.message);
+    }
     return parts.join('\n');
+  }
+
+  function isTechnicalStatusMessage(text) {
+    return /یکتا|خزش|گذر|API|MySQL|کارگر|SSR|\bDB\b/i.test(String(text || ''));
   }
 
   async function refreshOneUntilDone(slug, csrf, onTick) {
@@ -169,29 +253,60 @@
     const csrf = window.RONDINO_CSRF || '';
     let stopAll = false;
 
+    qsa('.js-toggle-error').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-target');
+        var block = id ? document.getElementById(id) : null;
+        if (!block) return;
+        block.hidden = !block.hidden;
+      });
+    });
+
     qsa('.btn-refresh-one').forEach(function (btn) {
       btn.addEventListener('click', async function () {
         const slug = btn.getAttribute('data-slug');
+        const card = btn.closest('[data-slug]');
+        const siteName = card && qs('.source-name', card)
+          ? qs('.source-name', card).textContent
+          : slug;
         btn.disabled = true;
         stopAll = true;
-        if (status) status.textContent = 'در حال به‌روزرسانی ' + slug + '…';
-        if (bar) bar.hidden = false;
+        if (status) status.textContent = 'در حال به‌روزرسانی «' + siteName + '»…';
+        if (bar) {
+          bar.hidden = false;
+          bar.classList.add('is-indeterminate');
+        }
+        if (detail) {
+          detail.hidden = false;
+          detail.textContent = '';
+        }
         try {
           await refreshOneUntilDone(slug, btn.getAttribute('data-csrf') || csrf, function (data) {
             const r = data.result || {};
             const p = r.progress || {};
-            if (detail) detail.textContent = formatBatchMessage(data);
-            if (status) status.textContent = (p.status_fa || '') + ' — ' + (p.progress_label || r.message || '');
-            if (fill && p.seed_total) {
-              const pct = Math.min(100, Math.round(((p.seed_index || 0) / p.seed_total) * 100));
-              fill.style.width = pct + '%';
+            if (detail) {
+              detail.hidden = false;
+              detail.textContent = formatBatchMessage(data);
+            }
+            if (status) {
+              status.textContent = (p.user_status_label || p.status_fa || 'در حال دریافت اطلاعات')
+                + (p.user_activity ? ' — ' + p.user_activity : '');
+            }
+            if (fill) {
+              if (typeof p.progress_pct === 'number') {
+                bar.classList.remove('is-indeterminate');
+                fill.style.width = Math.min(100, Math.max(0, p.progress_pct)) + '%';
+              } else if (p.seed_total) {
+                bar.classList.remove('is-indeterminate');
+                fill.style.width = Math.min(100, Math.round(((p.seed_index || 0) / p.seed_total) * 100)) + '%';
+              }
             }
             applyProgressRows(r.progress ? [r.progress] : []);
           });
-          if (status) status.textContent = 'به‌روزرسانی ' + slug + ' تمام شد.';
+          if (status) status.textContent = 'به‌روزرسانی «' + siteName + '» تمام شد.';
           location.reload();
         } catch (e) {
-          if (status) status.textContent = 'خطا در ارتباط با سرور';
+          if (status) status.textContent = 'ارتباط با سرور برقرار نشد.';
           btn.disabled = false;
         }
       });
@@ -201,38 +316,59 @@
     const pauseBtn = qs('#btn-pause-all');
     if (allBtn) {
       allBtn.addEventListener('click', async function () {
+        if (!window.confirm('همه سایت‌های فعال دوباره بررسی می‌شوند. ممکن است چند دقیقه طول بکشد. ادامه می‌دهید؟')) {
+          return;
+        }
         allBtn.disabled = true;
         stopAll = false;
         if (pauseBtn) pauseBtn.hidden = false;
-        if (bar) bar.hidden = false;
-        if (status) status.textContent = 'شروع دسته‌های چرخشی…';
+        if (bar) {
+          bar.hidden = false;
+          bar.classList.add('is-indeterminate');
+        }
+        if (detail) detail.hidden = false;
+        if (status) status.textContent = 'در حال به‌روزرسانی همه سایت‌ها…';
         try {
           const final = await refreshAllBatches(allBtn.getAttribute('data-csrf') || csrf, function () { return stopAll; }, function (data) {
-            if (detail) detail.textContent = formatBatchMessage(data);
+            if (detail) {
+              detail.hidden = false;
+              detail.textContent = formatBatchMessage(data);
+            }
             applyProgressRows(data.all_progress || []);
             const list = data.all_progress || [];
             const doneCount = list.filter(function (p) {
-              return p.status === 'completed' || p.status === 'blocked';
+              return p.status === 'completed' || p.status === 'blocked' || p.status === 'partial';
             }).length;
             const total = list.length || 1;
-            if (fill) fill.style.width = Math.round((doneCount / total) * 100) + '%';
+            if (fill) {
+              bar.classList.remove('is-indeterminate');
+              fill.style.width = Math.round((doneCount / total) * 100) + '%';
+            }
             if (status) {
-              const slug = data.slug || (data.result && data.result.slug) || '';
-              const st = (data.progress && data.progress.status_fa) || (data.result && data.result.progress && data.result.progress.status_fa) || '';
-              status.textContent = 'چرخش منابع' + (slug ? ' · ' + slug : '') + (st ? ' · ' + st : '')
-                + ' · کامل‌شده ' + doneCount + '/' + total;
+              const name = (data.progress && data.progress.name)
+                || (data.result && data.result.progress && data.result.progress.name)
+                || data.slug
+                || (data.result && data.result.slug)
+                || '';
+              const st = (data.progress && (data.progress.user_status_label || data.progress.status_fa))
+                || (data.result && data.result.progress && (data.result.progress.user_status_label || data.result.progress.status_fa))
+                || '';
+              status.textContent = 'به‌روزرسانی سایت‌ها'
+                + (name ? ' · ' + name : '')
+                + (st ? ' · ' + st : '')
+                + ' · ' + doneCount + ' از ' + total;
             }
           });
           if (final.paused) {
-            if (status) status.textContent = final.message || 'متوقف شد.';
+            if (status) status.textContent = 'دریافت اطلاعات متوقف شد. از همین‌جا قابل ادامه است.';
             allBtn.disabled = false;
             if (pauseBtn) pauseBtn.hidden = true;
             return;
           }
-          if (status) status.textContent = final.message || 'به‌روزرسانی همه منابع تمام شد.';
+          if (status) status.textContent = 'به‌روزرسانی همه سایت‌ها تمام شد.';
           location.reload();
         } catch (e) {
-          if (status) status.textContent = 'خطا در به‌روزرسانی همه';
+          if (status) status.textContent = 'به‌روزرسانی همه سایت‌ها با مشکل روبه‌رو شد.';
           allBtn.disabled = false;
           if (pauseBtn) pauseBtn.hidden = true;
         }
@@ -256,16 +392,26 @@
       try {
         const data = await postRefresh({ _csrf: csrf, mode: 'all' });
         applyProgressRows(data.all_progress || []);
-        if (detail && data.message) detail.textContent = formatBatchMessage(data);
+        // Auto-resume stays quiet unless a site is actively receiving.
+        var receiving = (data.all_progress || []).some(function (p) {
+          return p.user_status === 'receiving' || p.status === 'running';
+        });
+        if (detail) {
+          if (receiving) {
+            detail.hidden = false;
+            detail.textContent = formatBatchMessage(data);
+          } else {
+            detail.hidden = true;
+            detail.textContent = '';
+          }
+        }
         if (!data.done) {
-          // Keep draining incomplete passes with short delays
           setTimeout(autoTick, 200);
           return;
         }
       } catch (e) { /* keep page usable */ }
       finally { autoBusy = false; }
     }
-    // On load: resume any paused/running pass without restarting completed ones
     setTimeout(autoTick, 600);
     if (minutes > 0) {
       setInterval(function () {
