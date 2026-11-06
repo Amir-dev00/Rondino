@@ -42,6 +42,7 @@ final class OfferStore
             $simIds = $this->ensureSims($pdo, array_map(static fn ($r) => (string) $r['sim_number'], $valid));
             $externalIds = array_map(static fn ($r) => (string) $r['external_id'], $valid);
             $existingMap = $this->loadExisting($pdo, $sourceId, $externalIds);
+            $bySim = $this->loadExistingBySim($pdo, $sourceId, array_values($simIds));
 
             $upserted = 0;
             $now = now_dt();
@@ -49,7 +50,17 @@ final class OfferStore
                 $externalId = (string) $listing['external_id'];
                 $simNumber = (string) $listing['sim_number'];
                 $simId = $simIds[$simNumber];
-                $this->upsertPrepared($pdo, $sourceId, $simId, $listing, $existingMap[$externalId] ?? null, $now);
+                $existing = $existingMap[$externalId] ?? null;
+                $bySimRow = $bySim[$simId] ?? null;
+                if ($existing && $bySimRow && (int) $existing['id'] !== (int) $bySimRow['id']) {
+                    // Same SIM under an old extraction id — keep verified identity row, drop the other.
+                    $pdo->prepare('DELETE FROM offers WHERE id = ?')->execute([(int) $bySimRow['id']]);
+                    CrawlMetrics::$sqlStatements++;
+                    unset($bySim[$simId]);
+                } elseif ($existing === null) {
+                    $existing = $bySimRow;
+                }
+                $this->upsertPrepared($pdo, $sourceId, $simId, $listing, $existing, $now);
                 $upserted++;
             }
             $pdo->commit();
@@ -79,7 +90,7 @@ final class OfferStore
         $this->selSim = $pdo->prepare('SELECT id FROM sim_numbers WHERE number = ?');
         $this->insSim = $pdo->prepare('INSERT INTO sim_numbers (number, code_digit, created_at) VALUES (?,?,?)');
         $this->updOffer = $pdo->prepare(
-            'UPDATE offers SET sim_number_id=?, canonical_url=?, price_amount=?, price_raw=?, price_type=?,
+            'UPDATE offers SET external_id=?, sim_number_id=?, canonical_url=?, price_amount=?, price_raw=?, price_type=?,
              condition_raw=?, condition_normalized=?, city=?, city_raw=?, seller_key=?, availability=?,
              last_seen_at=?, last_checked_at=? WHERE id=?'
         );
@@ -157,6 +168,33 @@ final class OfferStore
         return $map;
     }
 
+    /**
+     * Reconcile prior extraction IDs by verified SIM identity for this source.
+     *
+     * @param list<int> $simIds
+     * @return array<int, array<string,mixed>>
+     */
+    private function loadExistingBySim(PDO $pdo, int $sourceId, array $simIds): array
+    {
+        $simIds = array_values(array_unique(array_map('intval', $simIds)));
+        $map = [];
+        if ($simIds === []) {
+            return $map;
+        }
+        $placeholders = implode(',', array_fill(0, count($simIds), '?'));
+        $params = array_merge([$sourceId], $simIds);
+        $stmt = $pdo->prepare(
+            "SELECT id, external_id, sim_number_id, price_amount, price_type
+             FROM offers WHERE source_id = ? AND sim_number_id IN ($placeholders)"
+        );
+        $stmt->execute($params);
+        CrawlMetrics::$sqlStatements++;
+        foreach ($stmt->fetchAll() as $row) {
+            $map[(int) $row['sim_number_id']] = $row;
+        }
+        return $map;
+    }
+
     /** @param array<string,mixed> $listing */
     private function upsertPrepared(PDO $pdo, int $sourceId, int $simId, array $listing, ?array $existing, string $now): void
     {
@@ -167,9 +205,18 @@ final class OfferStore
         $availability = (($listing['availability'] ?? 'available') === 'sold') ? 'sold' : 'available';
 
         if ($existing) {
+            $newExternal = (string) $listing['external_id'];
+            $oldExternal = (string) ($existing['external_id'] ?? '');
+            if ($newExternal !== '' && $newExternal !== $oldExternal) {
+                // Drop stale row that already holds the verified listing identity.
+                $pdo->prepare('DELETE FROM offers WHERE source_id = ? AND external_id = ? AND id <> ?')
+                    ->execute([$sourceId, $newExternal, (int) $existing['id']]);
+                CrawlMetrics::$sqlStatements++;
+            }
             $priceChanged = ((string) ($existing['price_amount'] ?? '') !== (string) ($priceAmount ?? ''))
                 || ((string) $existing['price_type'] !== $priceType);
             $this->updOffer->execute([
+                $newExternal,
                 $simId,
                 (string) $listing['canonical_url'],
                 $priceAmount,

@@ -196,6 +196,7 @@ final class Http
     public static function clearMemoryCache(): void
     {
         self::$memoryCache = [];
+        self::$hostBackoffUntil = [];
     }
 
     /** @param array<string,string> $headers */

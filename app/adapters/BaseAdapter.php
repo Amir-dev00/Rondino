@@ -9,6 +9,38 @@ abstract class BaseAdapter implements AdapterInterface
         return null;
     }
 
+    /**
+     * Richer list parse: source records vs matching 0912 offers.
+     * Adapters may override; default wraps parseListPage.
+     *
+     * @return array{
+     *   listings: list<array<string,mixed>>,
+     *   source_record_ids: list<string>,
+     *   source_record_count: int,
+     *   excluded?: int
+     * }
+     */
+    public function parseListPayload(string $html, string $pageUrl): array
+    {
+        $listings = $this->parseListPage($html, $pageUrl);
+        $ids = [];
+        foreach ($listings as $row) {
+            $key = (string) ($row['external_id'] ?? '');
+            if ($key === '') {
+                $key = (string) ($row['sim_number'] ?? '');
+            }
+            if ($key !== '') {
+                $ids[] = $key;
+            }
+        }
+        return [
+            'listings' => $listings,
+            'source_record_ids' => $ids,
+            'source_record_count' => count($ids),
+            'excluded' => 0,
+        ];
+    }
+
     public function notes(): string
     {
         return '';

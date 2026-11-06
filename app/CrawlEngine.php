@@ -177,7 +177,13 @@ final class CrawlEngine
 
             $tParse = microtime(true);
             try {
-                $parsed = $adapter->parseListPage($res['body'], $res['final_url'] ?: $url);
+                $payload = method_exists($adapter, 'parseListPayload')
+                    ? $adapter->parseListPayload($res['body'], $res['final_url'] ?: $url)
+                    : [
+                        'listings' => $adapter->parseListPage($res['body'], $res['final_url'] ?: $url),
+                        'source_record_ids' => [],
+                        'source_record_count' => 0,
+                    ];
             } catch (Throwable $e) {
                 $state['branches'][$i]['status'] = 'failed';
                 $state['branches'][$i]['error'] = $url . ' => parse: ' . $e->getMessage();
@@ -186,6 +192,19 @@ final class CrawlEngine
                 continue;
             }
             CrawlMetrics::$parseMs += (microtime(true) - $tParse) * 1000;
+
+            $parsed = $payload['listings'] ?? [];
+            $sourceIds = array_values(array_filter(array_map('strval', $payload['source_record_ids'] ?? [])));
+            $sourceCount = (int) ($payload['source_record_count'] ?? count($sourceIds));
+            if ($sourceIds === [] && $parsed !== []) {
+                foreach ($parsed as $row) {
+                    $key = (string) ($row['external_id'] ?? $row['sim_number'] ?? '');
+                    if ($key !== '') {
+                        $sourceIds[] = $key;
+                    }
+                }
+                $sourceCount = max($sourceCount, count($sourceIds));
+            }
 
             // No detail pages: all fields come from list HTML
             CrawlMetrics::$detailAvoided += count($parsed);
@@ -198,10 +217,12 @@ final class CrawlEngine
                 }
             }
             $list = array_values($unique);
-            $ids = array_map(static fn ($r) => (string) $r['external_id'], $list);
-            sort($ids);
-            $fp = sha1(implode('|', $ids));
             $found = count($list);
+
+            // Fingerprint source-page identities (not only matching 0912 offers).
+            $fpIds = $sourceIds;
+            sort($fpIds);
+            $fp = sha1($url . '|' . $sourceCount . '|' . implode('|', $fpIds));
 
             $repeat = $page > 1 && (
                 (!empty($b['last_fp']) && $fp === $b['last_fp'])
@@ -238,6 +259,7 @@ final class CrawlEngine
             $batchUpserted += $result['upserted'];
             $state['offers_found'] = (int) ($state['offers_found'] ?? 0) + $found;
             $state['pages_fetched'] = (int) ($state['pages_fetched'] ?? 0) + 1;
+            $state['source_records'] = (int) ($state['source_records'] ?? 0) + $sourceCount;
             $state['seen_urls'][$url] = true;
             if ($page === 1) {
                 $state['branches'][$i]['seed_fp'] = $fp;
@@ -245,11 +267,11 @@ final class CrawlEngine
             $state['branches'][$i]['last_fp'] = $fp;
             $state['branches'][$i]['retried'] = false;
 
-            $next = null;
-            if ($found > 0) {
-                $next = $adapter->nextPageUrl($res['body'], $url, $page);
-            }
-            if ($found === 0 || $next === null || $next === '' || $next === $url || isset($state['seen_urls'][$next])) {
+            // Advance whenever verified pagination says so — even if this page had
+            // source rows but zero matching 0912 offers.
+            $next = $adapter->nextPageUrl($res['body'], $url, $page);
+            $noProgress = $next === null || $next === '' || $next === $url || isset($state['seen_urls'][$next]);
+            if ($noProgress) {
                 $state['branches'][$i]['status'] = 'done';
                 $state['branches'][$i]['url'] = null;
             } else {

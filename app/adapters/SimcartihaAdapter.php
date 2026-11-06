@@ -2,6 +2,11 @@
 
 declare(strict_types=1);
 
+/**
+ * Inventory is the TablePress DataTable (#tablepress-16) embedded on the homepage.
+ * Client-side DataTables filters that table ("1906 شماره پیدا شد"); WooCommerce Store API
+ * only exposes a handful of shop products and is not the listing source.
+ */
 final class SimcartihaAdapter extends BaseAdapter
 {
     public function slug(): string { return 'simcartiha'; }
@@ -10,81 +15,148 @@ final class SimcartihaAdapter extends BaseAdapter
 
     public function seedUrls(): array
     {
-        return ['https://simcartiha.ir/wp-json/wc/store/v1/products?per_page=50&page=1'];
+        return ['https://simcartiha.ir/'];
     }
 
     public function notes(): string
     {
-        return 'WooCommerce Store API عمومی؛ موجودی فعلی فروشگاه بسیار کوچک است (~۳ آگهی).';
+        return 'جدول TablePress روی صفحه اصلی (فیلتر DataTables سمت‌کلاینت). API فروشگاهی ووکامرس موجودی کامل نیست.';
+    }
+
+    public function fetchPage(string $url, int $timeout = 25): ?array
+    {
+        if (!str_contains($url, 'simcartiha.ir')) {
+            return null;
+        }
+        // Homepage HTML is large (~0.6–0.7MB); allow longer timeout and a couple of retries.
+        $wait = max($timeout, 60);
+        $last = null;
+        for ($try = 0; $try < 3; $try++) {
+            if ($try > 0) {
+                usleep(500000 * $try);
+            }
+            $last = Http::get($url, $wait, false);
+            if (!empty($last['ok']) && strlen((string) ($last['body'] ?? '')) > 1000) {
+                return $last;
+            }
+        }
+        return $last;
     }
 
     public function parseListPage(string $html, string $pageUrl): array
     {
-        $data = json_decode($html, true);
-        if (!is_array($data)) {
-            return WooHelpers::parseProductCards(
-                $html,
-                $pageUrl,
-                $this->baseUrl(),
-                'simcartiha-store',
-                $this->storeContacts(),
-                fn ($x) => $this->sim($x),
-                fn ($x) => $this->price($x),
-                fn ($c, $s) => $this->contacts($c, $s),
-                fn ($d) => $this->listing($d)
-            );
+        $payload = $this->parseListPayload($html, $pageUrl);
+        return $payload['listings'];
+    }
+
+    /**
+     * @return array{
+     *   listings: list<array<string,mixed>>,
+     *   source_record_ids: list<string>,
+     *   source_record_count: int,
+     *   excluded: int
+     * }
+     */
+    public function parseListPayload(string $html, string $pageUrl): array
+    {
+        // Reject WC JSON / error objects before HTML heuristics.
+        $trimmed = ltrim($html);
+        if ($trimmed !== '' && ($trimmed[0] === '[' || $trimmed[0] === '{')) {
+            $json = json_decode($html, true);
+            if (is_array($json)) {
+                if (isset($json['code']) || isset($json['error'])) {
+                    throw new RuntimeException(
+                        'JSON خطا از سیمکارتیها: ' . (string) ($json['code'] ?? $json['error'] ?? 'unknown')
+                    );
+                }
+                throw new RuntimeException(
+                    'پاسخ JSON ووکامرس به‌جای جدول TablePress دریافت شد؛ این API موجودی کامل نیست.'
+                );
+            }
+        }
+
+        if ($this->isChallengeOrError($html)) {
+            throw new RuntimeException('پاسخ سیمکارتیها چالش/خطا است؛ موجودی خالی محسوب نمی‌شود.');
+        }
+
+        if (!preg_match('/id=["\']tablepress-16["\']/i', $html)) {
+            throw new RuntimeException('جدول tablepress-16 در صفحه پیدا نشد؛ پاسخ ناشناخته است.');
+        }
+
+        $dom = Dom::fromHtml($html);
+        $table = null;
+        foreach ($dom->css('table') as $candidate) {
+            $id = (string) $dom->attr($candidate, 'id');
+            if (strcasecmp($id, 'tablepress-16') === 0) {
+                $table = $candidate;
+                break;
+            }
+        }
+        if ($table === null) {
+            throw new RuntimeException('جدول tablepress-16 قابل بارگذاری نبود.');
         }
 
         $listings = [];
-        foreach ($data as $product) {
-            if (!is_array($product)) {
+        $sourceIds = [];
+        $excluded = 0;
+        foreach ($dom->xpath('.//tbody/tr', $table) as $row) {
+            $cells = $dom->css('td', $row);
+            if (count($cells) < 3) {
+                $excluded++;
                 continue;
             }
-            $name = (string) ($product['name'] ?? '');
-            $permalink = (string) ($product['permalink'] ?? '');
-            $sim = $this->sim($permalink)
-                ?: $this->sim($name)
-                ?: $this->sim((string) ($product['sku'] ?? ''))
-                ?: $this->simFromReversedLabel($name)
-                ?: $this->simFromReversedLabel($permalink);
-            if (!$sim) {
+            $numberText = $dom->text($cells[0]);
+            $priceText = $dom->text($cells[1]);
+            $conditionText = $dom->text($cells[2]);
+            $priceNumeric = isset($cells[4]) ? $dom->text($cells[4]) : '';
+
+            $sim = $this->sim($numberText);
+            $rowKey = $sim ?: ('row:' . Digits::only(Digits::normalize($numberText . '|' . $priceNumeric)));
+            $sourceIds[] = $rowKey;
+
+            if ($sim === null) {
+                $excluded++;
                 continue;
             }
-            $priceMinor = $product['prices']['price'] ?? null;
-            $suffix = (string) ($product['prices']['currency_suffix'] ?? ' تومان');
-            $priceText = is_numeric($priceMinor) ? ((string) $priceMinor) . $suffix : null;
-            $price = $this->price($priceText);
-            $id = (string) ($product['id'] ?? $sim);
-            $listings[] = $this->listing([
-                'external_id' => $id,
+
+            $price = $this->priceFromCells($priceText, $priceNumeric);
+            $condition = $this->condition($conditionText !== '' ? $conditionText : null);
+
+            // Listings live in the homepage inventory table (no per-SIM product pages).
+            $canonical = $this->baseUrl() . '/#' . $sim;
+
+            $listings[$sim] = $this->listing([
+                'external_id' => $sim,
                 'sim_number' => $sim,
-                'canonical_url' => $permalink !== '' ? $permalink : $this->baseUrl() . '/product/' . $sim . '/',
+                'canonical_url' => $canonical,
                 'price_amount' => $price['amount'],
                 'price_raw' => $price['raw'],
                 'price_type' => $price['type'],
-                'condition_raw' => null,
-                'condition_normalized' => 'unknown',
+                'condition_raw' => $condition['raw'],
+                'condition_normalized' => $condition['normalized'],
+                'city' => null,
+                'city_raw' => null,
                 'contacts' => $this->contacts($this->storeContacts(), $sim),
                 'seller_key' => 'simcartiha-store',
             ]);
         }
-        return $listings;
+
+        if ($sourceIds === []) {
+            throw new RuntimeException('هیچ ردیف آگهی در جدول TablePress نبود؛ موجودی خالی تأیید نشد.');
+        }
+
+        return [
+            'listings' => array_values($listings),
+            'source_record_ids' => $sourceIds,
+            'source_record_count' => count($sourceIds),
+            'excluded' => $excluded,
+        ];
     }
 
     public function nextPageUrl(string $html, string $pageUrl, int $pageIndex): ?string
     {
-        if (!str_contains($pageUrl, '/wp-json/wc/store/')) {
-            return WooHelpers::nextPageUrl($html, $pageUrl, $pageIndex);
-        }
-        $data = json_decode($html, true);
-        if (!is_array($data) || $data === []) {
-            return null;
-        }
-        // X-WP-TotalPages is not in body; continue while a full page arrived.
-        if (count($data) < 50) {
-            return null;
-        }
-        return page_query_url($pageUrl, 'page', $pageIndex + 1);
+        // Full inventory is in one SSR TablePress table; DataTables paginates client-side only.
+        return null;
     }
 
     /** @return list<array{phone:string,type:string,scope:string,label:string}> */
@@ -93,22 +165,41 @@ final class SimcartihaAdapter extends BaseAdapter
         return [
             ['phone' => '09122373003', 'type' => 'mobile', 'scope' => 'store', 'label' => 'سیمکارتیها'],
             ['phone' => '02166677836', 'type' => 'landline', 'scope' => 'store', 'label' => 'سیمکارتیها'],
+            ['phone' => '02166677904', 'type' => 'landline', 'scope' => 'store', 'label' => 'سیمکارتیها'],
         ];
     }
 
-    /**
-     * Shop labels often show groups ending with 0912, e.g. "3003 237 0912" → 09122373003.
-     */
-    private function simFromReversedLabel(string $raw): ?string
+    /** @return array{amount:?int,type:string,raw:string,unit:?string} */
+    private function priceFromCells(string $priceText, string $priceNumeric): array
     {
-        $path = parse_url($raw, PHP_URL_PATH);
-        $focus = is_string($path) && $path !== '' ? basename($path) : $raw;
-        $norm = Digits::normalize($focus);
-        $parts = preg_split('/[\s\-_\/]+/u', trim($norm)) ?: [];
-        $parts = array_values(array_filter(array_map(static fn ($p) => Digits::only(Digits::normalize($p)), $parts)));
-        if ($parts === [] || end($parts) !== '0912') {
-            return null;
+        $normText = Digits::normalize(trim($priceText));
+        if ($normText === '' || preg_match('/تماس|call/ui', $normText)) {
+            return ['amount' => null, 'type' => 'call', 'raw' => $priceText, 'unit' => null];
         }
-        return $this->sim(implode('', array_reverse($parts)));
+        $digits = Digits::only(Digits::normalize($priceNumeric));
+        if ($digits !== '' && ctype_digit($digits) && (int) $digits > 0) {
+            return [
+                'amount' => (int) $digits,
+                'type' => 'fixed',
+                'raw' => $priceText !== '' ? $priceText : ($digits . ' تومان'),
+                'unit' => 'toman',
+            ];
+        }
+        $parsed = $this->price($priceText . (preg_match('/تومان/u', $priceText) ? '' : ' تومان'));
+        if (($parsed['amount'] ?? null) === null && ($parsed['type'] ?? '') === 'unknown') {
+            return ['amount' => null, 'type' => 'call', 'raw' => $priceText, 'unit' => null];
+        }
+        return $parsed;
+    }
+
+    private function isChallengeOrError(string $html): bool
+    {
+        if ($html === '' || strlen($html) < 200) {
+            return true;
+        }
+        if (stripos($html, 'Transferring to the website') !== false || stripos($html, '__arcsjs') !== false) {
+            return true;
+        }
+        return false;
     }
 }
