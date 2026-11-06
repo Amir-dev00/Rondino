@@ -1,0 +1,42 @@
+name: Crawler regression tests
+on:
+  push:
+    branches: [main, 'codex/rond-resume-*']
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: test
+          MYSQL_DATABASE: rondino_test
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -ptest"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: dom, mbstring, pdo_mysql, curl
+          coverage: none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax and isolated regression tests
+        run: |
+          find app scripts views public -name '*.php' -print0 | xargs -0 -n1 php -l
+          node --check scripts/browser-api-fetch.mjs
+          node --check public/js/app.js
+          node scripts/test-browser-fetch-unit.mjs
+          php scripts/test-rond-ir.php
+          php scripts/test-jalali.php
+      - name: MySQL crawl and seller identity regression tests
+        env:
+          RONDINO_TEST_DB: rondino_test
+          RONDINO_TEST_PASSWORD: test
+        run: php scripts/test-crawl-resume.php

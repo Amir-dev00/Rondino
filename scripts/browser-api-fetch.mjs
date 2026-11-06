@@ -24,6 +24,8 @@ if (!url) {
 
 const OVERALL_MS = Number(process.env.RONDINO_BROWSER_DEADLINE_MS || 120000);
 const startedAt = Date.now();
+const detailMode = process.argv.includes('--detail');
+const batchSize = Math.max(1, Math.min(4, Number(process.env.RONDINO_API_BATCH_SIZE || 3)));
 
 const DEFAULT_SEARCH = {
   advertSellTypeIn: null,
@@ -169,10 +171,28 @@ async function runWithProxy(proxyServer) {
   const page = await context.newPage();
   try {
     await warmUp(page);
+    if (detailMode) {
+      const target = new URL(url);
+      if (target.origin !== 'https://rond.ir' || !/^\/Sims\/0912\d{7}$/.test(target.pathname)) throw new Error('Invalid detail URL');
+      const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: Math.min(30000, remainingMs()) });
+      if (!response || !response.ok()) throw new Error('Detail HTTP ' + response?.status());
+      await page.waitForTimeout(1500);
+      const html = await safeContent(page);
+      if (looksLikeChallenge(html)) throw new Error('Detail challenge observed');
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      fs.writeFileSync(out, html);
+      diag.classification = 'success'; writeDiag();
+      return { code: 0 };
+    }
     const body = parseBody();
+    const pages = [];
+    let apiUrl = url;
+    for (let batchIndex = 0; batchIndex < batchSize && remainingMs() > 5000; batchIndex++) {
+    try {
     const result = await page.evaluate(
       async ({ apiUrl, body }) => {
         const res = await fetch(apiUrl, {
+          signal: AbortSignal.timeout(25000),
           method: 'POST',
           headers: {
             'content-type': 'application/json',
@@ -184,31 +204,46 @@ async function runWithProxy(proxyServer) {
         const text = await res.text();
         return { status: res.status, text, ok: res.ok };
       },
-      { apiUrl: url, body }
+      { apiUrl, body }
     );
 
     if (!result.ok || result.status >= 400) {
       diag.classification = 'http_error';
       diag.error = `API HTTP ${result.status}`;
       writeDiag({ api_status: result.status, preview: String(result.text || '').slice(0, 300) });
+      if (pages.length) break;
       return { code: 12 };
     }
     if (!/simCardNumber|totalElements|"content"\s*:/.test(result.text || '')) {
       diag.classification = 'no_listings';
       diag.error = 'API response lacked listing payload';
       writeDiag({ preview: String(result.text || '').slice(0, 300) });
+      if (pages.length) break;
       return { code: 14 };
     }
 
-    if (out) {
-      fs.mkdirSync(path.dirname(out), { recursive: true });
-      fs.writeFileSync(out, result.text, 'utf8');
-    } else {
-      process.stdout.write(result.text);
+    const payload = JSON.parse(result.text);
+    const requested = Number(new URL(apiUrl).searchParams.get('page'));
+    if (!Array.isArray(payload.content) || Number(payload.number ?? payload.pageable?.pageNumber) !== requested) {
+      throw new Error('API page identity/schema mismatch');
     }
-    diag.classification = 'success';
-    diag.error = null;
-    writeDiag({ api_status: result.status, body_len: result.text.length });
+    pages.push({ url: apiUrl, body: result.text });
+    if (payload.last === true || (Number.isInteger(payload.totalPages) && requested + 1 >= payload.totalPages) || !payload.content.length) break;
+    const next = new URL(apiUrl); next.searchParams.set('page', String(requested + 1));
+    apiUrl = next.href;
+    await page.waitForTimeout(1000);
+    } catch (err) {
+      if (!pages.length) throw err;
+      diag.prefetch_error = String(err.message || err);
+      break; // Persist only successfully fetched pages; the PHP cursor still controls progress.
+    }
+    }
+    if (!pages.length) throw new Error('No API pages fetched within deadline');
+    const output = JSON.stringify({ pages });
+    if (out) { fs.mkdirSync(path.dirname(out), { recursive: true }); fs.writeFileSync(out, output); }
+    else process.stdout.write(output);
+    diag.classification = 'success'; diag.error = null;
+    writeDiag({ pages_fetched: pages.length });
     return { code: 0 };
   } catch (err) {
     const kind = err && err.kind ? err.kind : 'unexpected_error';
@@ -244,3 +279,4 @@ try {
   exitCode = 20;
 }
 process.exitCode = exitCode;
+

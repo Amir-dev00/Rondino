@@ -26,6 +26,17 @@ final class CrawlEngine
         if (!$source) {
             return ['ok' => false, 'message' => 'منبع در پایگاه نیست.', 'slug' => $slug];
         }
+        if (empty($source['is_enabled']) || $slug === 'setaresim') {
+            return ['ok' => false, 'slug' => $slug, 'pass_status' => 'disabled', 'message' => 'منبع غیرفعال است.'];
+        }
+        // MySQL session lock survives long browser calls and is released on process death.
+        $lockName = 'rondino-source-' . (int) $source['id'];
+        $lock = $pdo->prepare('SELECT GET_LOCK(?, 0)');
+        $lock->execute([$lockName]);
+        if ((int) $lock->fetchColumn() !== 1) {
+            return ['ok' => true, 'busy' => true, 'slug' => $slug, 'pass_status' => 'running'];
+        }
+        try {
         $sourceId = (int) $source['id'];
         $now = now_dt();
         $pdo->prepare('UPDATE sources SET last_attempt_at = ? WHERE id = ?')->execute([$now, $sourceId]);
@@ -45,7 +56,7 @@ final class CrawlEngine
             ];
         }
 
-        if (in_array($pass['status'], ['completed', 'blocked'], true) && !$restart) {
+        if (in_array($pass['status'], ['completed', 'blocked', 'partial'], true) && !$restart) {
             $this->release($pdo, (int) $pass['id']);
             return [
                 'ok' => $pass['status'] === 'completed',
@@ -66,10 +77,17 @@ final class CrawlEngine
         }
 
         $state = $this->decodeState($pass['branch_state'] ?? null, $seeds);
+        if ($restart && method_exists($adapter, 'clearPrefetch')) $adapter->clearPrefetch();
         if ($restart || empty($pass['branch_state'])) {
             $state = $this->freshState($seeds);
         }
 
+        foreach ($state['branches'] as &$branch) {
+            if (($branch['status'] ?? '') === 'retry' && (int) ($branch['retry_at'] ?? 0) <= time()) {
+                $branch['status'] = 'active';
+            }
+        }
+        unset($branch);
         $maxFetches = $maxFetches > 0 ? $maxFetches : max(1, (int) config('crawl_page_budget', 4));
         $timeout = (int) config('http_timeout', 25);
         $ready = [];
@@ -107,15 +125,16 @@ final class CrawlEngine
                 $offersFound = (int) ($state['offers_found'] ?? $pass['offers_found'] ?? 0);
                 $pagesFetched = (int) ($state['pages_fetched'] ?? $pass['pages_fetched'] ?? 0);
                 // Verified inventory (done branch or stored offers) must not be wiped by a later page failure.
-                $status = ($anyOk || $offersFound > 0) ? 'completed' : (($errors !== [] || $pagesFetched === 0) ? 'blocked' : 'completed');
+                $status = $errors !== [] ? ($offersFound > 0 ? 'partial' : 'blocked') : ($anyOk ? 'completed' : 'blocked');
                 if ($offersFound === 0 && $pagesFetched === 0 && $errors !== []) {
                     $status = 'blocked';
                 }
-                $msg = $status === 'blocked' ? 'همه شاخه‌ها ناموفق بودند.' : 'پایان تأییدشدهٔ همه شاخه‌ها.';
+                $msg = $status === 'completed' ? 'پایان همه شاخه‌ها' : 'گذر ناقص یا ناموفق است';
                 $pass['offers_found'] = $offersFound;
                 $pass['pages_fetched'] = $pagesFetched;
+                $errors = $this->collectErrors($state);
                 $pass['branch_errors'] = $errors === [] ? null : json_encode($errors, JSON_UNESCAPED_UNICODE);
-                $this->persistState($pdo, $pass, $state, $status === 'completed' || $status === 'blocked' ? $status : 'paused', $now, true);
+                $this->persistState($pdo, $pass, $state, $status, $now, true);
                 $this->touchSummary($pdo, $sourceId, $pass, $errors, $now, $status === 'completed');
                 return [
                     'ok' => $status === 'completed',
@@ -169,7 +188,10 @@ final class CrawlEngine
             }
 
             if (!$res['ok']) {
-                $state['branches'][$i]['status'] = 'failed';
+                $attempt = (int) ($b['attempts'] ?? 0) + 1;
+                $state['branches'][$i]['attempts'] = $attempt;
+                $state['branches'][$i]['status'] = $attempt < 5 ? 'retry' : 'failed';
+                $state['branches'][$i]['retry_at'] = time() + min(300, 5 * (2 ** $attempt)) + random_int(0, 3);
                 $state['branches'][$i]['error'] = $url . ' => ' . ($res['error'] ?? 'خطا');
                 $errors[] = $state['branches'][$i]['error'];
                 continue;
@@ -207,6 +229,11 @@ final class CrawlEngine
             }
 
             if (isset($payload['coverage']) && is_array($payload['coverage'])) {
+                $previousTotal = $state['source_total_elements'] ?? null;
+                if ($previousTotal !== null && isset($payload['coverage']['total_elements']) && $previousTotal !== (int) $payload['coverage']['total_elements']) {
+                    $state['inventory_changed_during_crawl'] = true;
+                }
+                $state['total_observed_at'] = now_dt();
                 $state['coverage'] = $payload['coverage'];
                 if (isset($payload['coverage']['total_elements'])) {
                     $state['source_total_elements'] = (int) $payload['coverage']['total_elements'];
@@ -229,24 +256,10 @@ final class CrawlEngine
             $list = array_values($unique);
             $found = count($list);
 
-            if (!isset($state['seen_external_ids']) || !is_array($state['seen_external_ids'])) {
-                $state['seen_external_ids'] = [];
-            }
-            $newUnique = 0;
-            foreach ($list as $row) {
-                $eid = (string) ($row['external_id'] ?? '');
-                if ($eid === '' || isset($state['seen_external_ids'][$eid])) {
-                    continue;
-                }
-                $state['seen_external_ids'][$eid] = 1;
-                $newUnique++;
-            }
-            $state['unique_offers'] = (int) ($state['unique_offers'] ?? 0) + $newUnique;
-
             // Fingerprint source-page identities (not only matching 0912 offers).
             $fpIds = $sourceIds;
             sort($fpIds);
-            $fp = sha1($url . '|' . $sourceCount . '|' . implode('|', $fpIds));
+            $fp = sha1($sourceCount . '|' . implode('|', $fpIds));
 
             $repeat = $page > 1 && (
                 (!empty($b['last_fp']) && $fp === $b['last_fp'])
@@ -254,12 +267,15 @@ final class CrawlEngine
             );
 
             if ($repeat) {
-                $state['branches'][$i]['status'] = 'done';
+                $state['branches'][$i]['status'] = 'failed';
+                $state['branches'][$i]['error'] = 'Repeated source page before verified end';
+                $errors[] = $state['branches'][$i]['error'];
                 $state['pages_fetched'] = (int) ($state['pages_fetched'] ?? 0) + 1;
                 continue;
             }
 
             try {
+                $next = $adapter->nextPageUrl($res['body'], $url, $page);
                 $result = $store->upsertMany($sourceId, $list);
             } catch (Throwable $e) {
                 // Do not advance cursor past unsaved listings
@@ -279,6 +295,28 @@ final class CrawlEngine
                 ];
             }
 
+            if (!isset($state['seen_external_ids']) || !is_array($state['seen_external_ids'])) {
+                $state['seen_external_ids'] = [];
+            }
+            $newUnique = 0;
+            foreach ($list as $row) {
+                $eid = (string) ($row['external_id'] ?? '');
+                if ($eid === '' || isset($state['seen_external_ids'][$eid])) {
+                    continue;
+                }
+                $state['seen_external_ids'][$eid] = 1;
+                $newUnique++;
+            }
+            $state['unique_offers'] = (int) ($state['unique_offers'] ?? 0) + $newUnique;
+
+            foreach ($list as $row) {
+                $state['seen_sim_numbers'][(string) $row['sim_number']] = 1;
+            }
+            $state['excluded_rows'] = (int) ($state['excluded_rows'] ?? 0) + (int) ($payload['excluded'] ?? 0);
+            $state['duplicate_rows'] = (int) ($state['duplicate_rows'] ?? 0) + max(0, $sourceCount - (int) ($payload['excluded'] ?? 0) - $newUnique);
+            $state['branches'][$i]['error'] = null;
+            $state['branches'][$i]['attempts'] = 0;
+            $state['branches'][$i]['retry_at'] = null;
             $batchOffers += $found;
             $batchUpserted += $result['upserted'];
             $state['offers_found'] = (int) ($state['offers_found'] ?? 0) + $found;
@@ -293,11 +331,12 @@ final class CrawlEngine
 
             // Advance whenever verified pagination says so — even if this page had
             // source rows but zero matching 0912 offers.
-            $next = $adapter->nextPageUrl($res['body'], $url, $page);
             $noProgress = $next === null || $next === '' || $next === $url || isset($state['seen_urls'][$next]);
             if ($noProgress) {
-                $state['branches'][$i]['status'] = 'done';
-                $state['branches'][$i]['url'] = null;
+                $loop = $next !== null && $next !== '';
+                $state['branches'][$i]['status'] = $loop ? 'failed' : 'done';
+                $state['branches'][$i]['error'] = $loop ? 'Pagination loop before verified end' : null;
+                $state['branches'][$i]['url'] = $loop ? $url : null;
                 $state['branches'][$i]['stop_reason'] = ($next === null || $next === '' || $next === $url)
                     ? 'pagination_exhausted'
                     : 'duplicate_next_url';
@@ -322,7 +361,7 @@ final class CrawlEngine
         $totalPages = (int) ($state['source_total_pages'] ?? 0);
         foreach ($state['branches'] as $idx => $b) {
             $st = $b['status'] ?? '';
-            if ($st === 'active' || $st === 'pending') {
+            if ($st === 'active' || $st === 'pending' || $st === 'retry') {
                 $pendingLeft++;
                 if ($activeLabel === '') {
                     $seedIndex = $idx;
@@ -350,6 +389,7 @@ final class CrawlEngine
         $pass['last_batch_at'] = $now;
         $pass['seed_index'] = $seedIndex;
         $pass['page_index'] = $pageIndex;
+        $errors = $this->collectErrors($state);
         $pass['branch_errors'] = $errors === [] ? null : json_encode(array_values(array_unique($errors)), JSON_UNESCAPED_UNICODE);
         $pass['last_error'] = $errors === [] ? null : mb_substr((string) end($errors), 0, 900);
         $pass['progress_label'] = $activeLabel !== '' ? ($activeLabel . ' · موج موازی') : 'در حال جمع‌بندی شاخه‌ها';
@@ -365,7 +405,7 @@ final class CrawlEngine
                     $stopReasons[] = (string) $b['stop_reason'];
                 }
             }
-            if (($b['status'] ?? '') === 'failed' && !empty($b['error'])) {
+            if (in_array($b['status'] ?? '', ['failed', 'retry'], true) && !empty($b['error'])) {
                 $stopReasons[] = 'branch_failed';
             }
         }
@@ -373,7 +413,7 @@ final class CrawlEngine
         if ($finished) {
             $offersFound = (int) $pass['offers_found'];
             $pagesFetched = (int) $pass['pages_fetched'];
-            $status = ($anyOk || $offersFound > 0) ? 'completed' : 'blocked';
+            $status = $errors !== [] ? ($offersFound > 0 ? 'partial' : 'blocked') : ($anyOk ? 'completed' : 'blocked');
             if ($offersFound === 0 && $pagesFetched === 0 && $errors !== []) {
                 $status = 'blocked';
             }
@@ -405,12 +445,12 @@ final class CrawlEngine
         } else {
             $this->persistState($pdo, $pass, $state, 'paused', $now, false);
             $this->release($pdo, (int) $pass['id']);
-            $this->touchSummary($pdo, $sourceId, $pass, $errors, $now, true);
+            $this->touchSummary($pdo, $sourceId, $pass, $errors, $now, $batchUpserted > 0);
             $passStatus = 'paused';
         }
 
         return [
-            'ok' => true,
+            'ok' => !in_array($passStatus, ['partial','blocked'], true),
             'busy' => false,
             'slug' => $slug,
             'pass_status' => $passStatus,
@@ -426,6 +466,11 @@ final class CrawlEngine
             'progress' => $crawler->progressSnapshot($slug),
             'metrics' => CrawlMetrics::snapshot(),
         ];
+        } finally {
+            $unlock = $pdo->prepare('SELECT RELEASE_LOCK(?)');
+            $unlock->execute([$lockName]);
+        }
+
     }
 
     /**
@@ -440,7 +485,7 @@ final class CrawlEngine
         // Round-robin one wave each so a slow domain cannot starve others across waves
         foreach ($slugs as $slug) {
             $snap = (new Crawler())->progressSnapshot($slug);
-            if (in_array($snap['status'], ['completed', 'blocked'], true)) {
+            if (in_array($snap['status'], ['completed', 'blocked', 'partial'], true)) {
                 continue;
             }
             $results[] = $this->advanceSource($slug, $snap['status'] === 'idle', $fetchesPerSource);
@@ -493,7 +538,7 @@ final class CrawlEngine
     {
         $errors = [];
         foreach ($state['branches'] as $b) {
-            if (($b['status'] ?? '') === 'failed' && !empty($b['error'])) {
+            if (in_array($b['status'] ?? '', ['failed', 'retry'], true) && !empty($b['error'])) {
                 $errors[] = (string) $b['error'];
             }
         }
@@ -559,8 +604,8 @@ final class CrawlEngine
                      last_batch_offers, progress_label, branch_state, lock_token, locked_until, started_at, updated_at)
                      VALUES (?,?,0,1,?,0,0,0,?,?,?,?,?,?)'
                 )->execute([$sourceId, 'running', $first, 'شروع گذر جدید', $fresh, $token, $lockUntil, $now, $now]);
-            } elseif ($restart || in_array($pass['status'], ['completed', 'blocked'], true)) {
-                if (!$restart && in_array($pass['status'], ['completed', 'blocked'], true)) {
+            } elseif ($restart || in_array($pass['status'], ['completed', 'blocked', 'partial'], true)) {
+                if (!$restart && in_array($pass['status'], ['completed', 'blocked', 'partial'], true)) {
                     $pdo->prepare('UPDATE crawl_passes SET lock_token=?, locked_until=?, updated_at=? WHERE id=?')
                         ->execute([$token, $lockUntil, $now, (int) $pass['id']]);
                 } else {
@@ -624,3 +669,4 @@ final class CrawlEngine
         ]);
     }
 }
+

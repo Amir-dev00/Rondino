@@ -76,7 +76,7 @@ ob_start();
             </div>
             <div class="muted js-pass-coverage">
               <?php
-                $covComplete = !empty($prog['coverage_complete']);
+                $covComplete = !empty($prog['inventory_path']);
                 $covScope = (string) ($prog['coverage_scope'] ?? '');
                 if ($covComplete) {
                     echo 'مسیر پوشش: موجودی لیست API (نه نمونه صفحه اصلی)';
@@ -95,6 +95,8 @@ ob_start();
                 }
               ?>
             </div>
+            <div class="muted js-pass-contact">آگهی دارای تماس (کل سابقه): <?= (int) ($prog['contact_offers'] ?? 0) ?> · شماره یکتای این گذر: <?= (int) ($prog['distinct_sims_pass'] ?? 0) ?></div>
+            <div class="muted js-pass-retry">تلاش بعدی: <?= e((string) ($prog['next_retry_at_fa'] ?? '—')) ?></div>
             <div class="muted js-pass-db">DB تاریخی یکتا: <?= (int) ($prog['db_unique_offers'] ?? 0) ?></div>
           <?php else: ?>
             <span class="muted">—</span>
@@ -129,3 +131,4 @@ $content = ob_get_clean();
 $title = 'وضعیت منابع — روندینو';
 $active = 'sources';
 require __DIR__ . '/layout.php';
+

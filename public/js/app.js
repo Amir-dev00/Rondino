@@ -35,7 +35,7 @@
       var covEl = qs('.js-pass-coverage', row);
       if (covEl) {
         var covText = 'پوشش: هنوز مشخص نشده';
-        if (p.coverage_complete) {
+        if (p.inventory_path) {
           covText = 'مسیر پوشش: موجودی لیست API (نه نمونه صفحه اصلی)'
             + (p.source_total_elements ? (' · کل منبع: ' + p.source_total_elements) : '');
         } else if (p.coverage_scope === 'homepage_or_html_sample') {
@@ -46,6 +46,10 @@
         if (p.stop_reason) covText += ' · توقف: ' + p.stop_reason;
         covEl.textContent = covText;
       }
+      var contactEl = qs('.js-pass-contact', row);
+      if (contactEl) contactEl.textContent = 'آگهی دارای تماس (کل سابقه): ' + (p.contact_offers || 0) + ' · شماره یکتای این گذر: ' + (p.distinct_sims_pass || 0);
+      var retryEl = qs('.js-pass-retry', row);
+      if (retryEl) retryEl.textContent = 'تلاش بعدی: ' + (p.next_retry_at_fa || '—');
       var dbEl = qs('.js-pass-db', row);
       if (dbEl) dbEl.textContent = 'DB تاریخی یکتا: ' + (p.db_unique_offers || 0);
       if (offersEl) {
@@ -268,3 +272,4 @@
 
   if (qs('#market-filter-form')) bindMarketPage();
 })();
+

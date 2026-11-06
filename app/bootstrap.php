@@ -21,6 +21,7 @@ require_once __DIR__ . '/adapters/Registry.php';
 require_once __DIR__ . '/CrawlEngine.php';
 require_once __DIR__ . '/CrawlJob.php';
 require_once __DIR__ . '/Crawler.php';
+require_once __DIR__ . '/RondContacts.php';
 
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_set_cookie_params([
@@ -33,3 +34,4 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
 }
 
 date_default_timezone_set('UTC');
+

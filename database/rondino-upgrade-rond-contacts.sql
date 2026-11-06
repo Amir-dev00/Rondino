@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS rond_contact_checks (
+  offer_id INT UNSIGNED NOT NULL PRIMARY KEY,
+  status VARCHAR(32) NOT NULL DEFAULT 'pending',
+  attempts INT NOT NULL DEFAULT 0,
+  checked_at DATETIME NULL,
+  retry_at DATETIME NULL,
+  error VARCHAR(500) NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
