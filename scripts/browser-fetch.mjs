@@ -27,6 +27,7 @@ import {
   classifyNavError,
   hasVerifiedListings,
   looksLikeChallenge,
+  normalizeProxyServer,
   normalizeUrl,
 } from './browser-fetch-lib.mjs';
 
@@ -69,11 +70,7 @@ function resolveProxyServer() {
   for (const k of ['RONDINO_BROWSER_PROXY', 'HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy']) {
     const v = process.env[k];
     if (v && String(v).trim()) {
-      let s = String(v).trim();
-      if (!/^[a-z]+:\/\//i.test(s)) {
-        s = 'http://' + s;
-      }
-      return s;
+      return normalizeProxyServer(v);
     }
   }
   return null;
@@ -311,7 +308,7 @@ try {
     if (fallback && String(fallback).trim()) {
       let raw = String(fallback).trim();
       const variants = [];
-      if (/^[a-z]+:\/\//i.test(raw)) {
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
         variants.push(raw);
         // Also try alternate scheme for host:port proxies commonly used as SOCKS.
         try {

@@ -4,6 +4,7 @@ import {
   classifyNavError,
   hasVerifiedListings,
   looksLikeChallenge,
+  normalizeProxyServer,
   normalizeUrl,
 } from './browser-fetch-lib.mjs';
 
@@ -23,6 +24,8 @@ assert(
 );
 assert('normalize trailing slash root', normalizeUrl('https://rond.ir') === 'https://rond.ir/');
 assert('normalize keeps path', normalizeUrl('https://rond.ir/Sims/09121111111/') === 'https://rond.ir/Sims/09121111111');
+assert('socks5 proxy scheme preserved', normalizeProxyServer('socks5://127.0.0.1:10808') === 'socks5://127.0.0.1:10808');
+assert('bare proxy host gets http', normalizeProxyServer('127.0.0.1:10808') === 'http://127.0.0.1:10808');
 
 assert(
   'connection timeout is network, not challenge',

@@ -116,6 +116,13 @@ final class Crawler
                 'page_index' => 0,
                 'seed_total' => $seedCount,
                 'offers_found' => 0,
+                'unique_offers_pass' => 0,
+                'db_unique_offers' => 0,
+                'pages_fetched' => 0,
+                'coverage_scope' => '',
+                'coverage_complete' => false,
+                'coverage_label' => '',
+                'stop_reason' => null,
                 'last_batch_offers' => 0,
                 'last_batch_at' => null,
                 'last_batch_at_fa' => '—',
@@ -141,6 +148,23 @@ final class Crawler
             $branchErrors = is_array($decoded) ? array_values(array_map('strval', $decoded)) : [(string) $pass['branch_errors']];
         }
 
+        $state = [];
+        if (!empty($pass['branch_state'])) {
+            $decoded = json_decode((string) $pass['branch_state'], true);
+            $state = is_array($decoded) ? $decoded : [];
+        }
+        $coverage = is_array($state['coverage'] ?? null) ? $state['coverage'] : [];
+        $uniqueOffers = (int) ($state['unique_offers'] ?? $pass['offers_found'] ?? 0);
+        $dbUnique = 0;
+        $sourceId = (int) ($src['id'] ?? 0);
+        if ($sourceId > 0) {
+            $cstmt = $pdo->prepare(
+                'SELECT COUNT(DISTINCT sim_number_id) FROM offers WHERE source_id = ?'
+            );
+            $cstmt->execute([$sourceId]);
+            $dbUnique = (int) $cstmt->fetchColumn();
+        }
+
         return [
             'slug' => $slug,
             'name' => $src['name'] ?? $slug,
@@ -149,8 +173,16 @@ final class Crawler
             'seed_index' => (int) $pass['seed_index'],
             'page_index' => (int) $pass['page_index'],
             'seed_total' => $seedCount,
-            'offers_found' => (int) $pass['offers_found'],
+            'offers_found' => $uniqueOffers,
+            'unique_offers_pass' => $uniqueOffers,
+            'db_unique_offers' => $dbUnique,
             'pages_fetched' => (int) $pass['pages_fetched'],
+            'source_total_elements' => isset($state['source_total_elements']) ? (int) $state['source_total_elements'] : null,
+            'source_total_pages' => isset($state['source_total_pages']) ? (int) $state['source_total_pages'] : null,
+            'coverage_scope' => (string) ($coverage['scope'] ?? ''),
+            'coverage_complete' => !empty($coverage['is_complete_inventory']),
+            'coverage_label' => (string) ($coverage['label'] ?? ''),
+            'stop_reason' => $state['stop_reason'] ?? null,
             'last_batch_offers' => (int) $pass['last_batch_offers'],
             'last_batch_at' => $pass['last_batch_at'],
             'last_batch_at_fa' => Jalali::formatDateTime($pass['last_batch_at'] ?? null),

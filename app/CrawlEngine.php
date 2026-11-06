@@ -206,7 +206,17 @@ final class CrawlEngine
                 $sourceCount = max($sourceCount, count($sourceIds));
             }
 
-            // No detail pages: all fields come from list HTML
+            if (isset($payload['coverage']) && is_array($payload['coverage'])) {
+                $state['coverage'] = $payload['coverage'];
+                if (isset($payload['coverage']['total_elements'])) {
+                    $state['source_total_elements'] = (int) $payload['coverage']['total_elements'];
+                }
+                if (isset($payload['coverage']['total_pages'])) {
+                    $state['source_total_pages'] = (int) $payload['coverage']['total_pages'];
+                }
+            }
+
+            // No detail pages: all fields come from list HTML/API
             CrawlMetrics::$detailAvoided += count($parsed);
 
             $unique = [];
@@ -218,6 +228,20 @@ final class CrawlEngine
             }
             $list = array_values($unique);
             $found = count($list);
+
+            if (!isset($state['seen_external_ids']) || !is_array($state['seen_external_ids'])) {
+                $state['seen_external_ids'] = [];
+            }
+            $newUnique = 0;
+            foreach ($list as $row) {
+                $eid = (string) ($row['external_id'] ?? '');
+                if ($eid === '' || isset($state['seen_external_ids'][$eid])) {
+                    continue;
+                }
+                $state['seen_external_ids'][$eid] = 1;
+                $newUnique++;
+            }
+            $state['unique_offers'] = (int) ($state['unique_offers'] ?? 0) + $newUnique;
 
             // Fingerprint source-page identities (not only matching 0912 offers).
             $fpIds = $sourceIds;
@@ -274,10 +298,14 @@ final class CrawlEngine
             if ($noProgress) {
                 $state['branches'][$i]['status'] = 'done';
                 $state['branches'][$i]['url'] = null;
+                $state['branches'][$i]['stop_reason'] = ($next === null || $next === '' || $next === $url)
+                    ? 'pagination_exhausted'
+                    : 'duplicate_next_url';
             } else {
                 $state['branches'][$i]['status'] = 'active';
                 $state['branches'][$i]['page'] = $page + 1;
                 $state['branches'][$i]['url'] = $next;
+                $state['branches'][$i]['stop_reason'] = null;
             }
         }
 
@@ -286,6 +314,12 @@ final class CrawlEngine
         $seedIndex = 0;
         $pageIndex = 1;
         $pendingLeft = 0;
+        $coverage = is_array($state['coverage'] ?? null) ? $state['coverage'] : [];
+        $coverageScope = (string) ($coverage['scope'] ?? '');
+        $isCompleteInventory = !empty($coverage['is_complete_inventory']);
+        $uniqueOffers = (int) ($state['unique_offers'] ?? 0);
+        $totalElements = (int) ($state['source_total_elements'] ?? 0);
+        $totalPages = (int) ($state['source_total_pages'] ?? 0);
         foreach ($state['branches'] as $idx => $b) {
             $st = $b['status'] ?? '';
             if ($st === 'active' || $st === 'pending') {
@@ -293,12 +327,24 @@ final class CrawlEngine
                 if ($activeLabel === '') {
                     $seedIndex = $idx;
                     $pageIndex = (int) ($b['page'] ?? 1);
-                    $activeLabel = sprintf('شاخه %d/%d · صفحه %d', $idx + 1, count($seeds), $pageIndex);
+                    $covBit = $isCompleteInventory
+                        ? 'مسیر: موجودی لیست API'
+                        : ($coverageScope === 'homepage_or_html_sample' ? 'مسیر: نمونه صفحه اصلی' : 'مسیر پوشش: نامشخص');
+                    $activeLabel = sprintf(
+                        '%s · شاخه %d/%d · صفحه %d%s · یکتای گذر %d',
+                        $covBit,
+                        $idx + 1,
+                        count($seeds),
+                        $pageIndex,
+                        $totalPages > 0 ? ('/' . $totalPages) : '',
+                        $uniqueOffers
+                    );
                 }
             }
         }
 
-        $pass['offers_found'] = (int) ($state['offers_found'] ?? 0);
+        // Prefer unique current-crawl count for pass reporting (historical DB is separate in UI).
+        $pass['offers_found'] = $uniqueOffers > 0 ? $uniqueOffers : (int) ($state['offers_found'] ?? 0);
         $pass['pages_fetched'] = (int) ($state['pages_fetched'] ?? 0);
         $pass['last_batch_offers'] = $batchOffers;
         $pass['last_batch_at'] = $now;
@@ -311,12 +357,19 @@ final class CrawlEngine
 
         $finished = $pendingLeft === 0;
         $anyOk = false;
+        $stopReasons = [];
         foreach ($state['branches'] as $b) {
             if (($b['status'] ?? '') === 'done') {
                 $anyOk = true;
-                break;
+                if (!empty($b['stop_reason'])) {
+                    $stopReasons[] = (string) $b['stop_reason'];
+                }
+            }
+            if (($b['status'] ?? '') === 'failed' && !empty($b['error'])) {
+                $stopReasons[] = 'branch_failed';
             }
         }
+        $state['stop_reason'] = $stopReasons === [] ? null : implode(',', array_values(array_unique($stopReasons)));
         if ($finished) {
             $offersFound = (int) $pass['offers_found'];
             $pagesFetched = (int) $pass['pages_fetched'];
@@ -324,7 +377,28 @@ final class CrawlEngine
             if ($offersFound === 0 && $pagesFetched === 0 && $errors !== []) {
                 $status = 'blocked';
             }
-            $pass['progress_label'] = $status === 'blocked' ? 'همه شاخه‌ها ناموفق بودند.' : 'پایان تأییدشدهٔ همه شاخه‌ها.';
+            $gap = '';
+            if ($isCompleteInventory && $totalElements > 0 && $uniqueOffers < $totalElements) {
+                $gap = sprintf(' · فاصله پوشش %d/%d', $uniqueOffers, $totalElements);
+            }
+            $covBit = $isCompleteInventory
+                ? 'مسیر موجودی لیست API'
+                : ($coverageScope === 'homepage_or_html_sample' ? 'نمونه صفحه اصلی (ناقص)' : 'پوشش نامشخص');
+            if ($status === 'blocked') {
+                $pass['progress_label'] = 'توقف: همه شاخه‌ها ناموفق · ' . $covBit;
+                $state['stop_reason'] = 'all_branches_failed';
+            } else {
+                $reason = $state['stop_reason'] ?: 'pagination_exhausted';
+                $pass['progress_label'] = sprintf(
+                    'پایان · %s · صفحات %d · یکتای گذر %d · دلیل توقف: %s%s',
+                    $covBit,
+                    $pagesFetched,
+                    $uniqueOffers,
+                    $reason,
+                    $gap
+                );
+            }
+            // Never mark older offers sold/removed just because a sample homepage rotated.
             $this->persistState($pdo, $pass, $state, $status, $now, true);
             $this->touchSummary($pdo, $sourceId, $pass, $errors, $now, $status === 'completed');
             $passStatus = $status;
@@ -388,7 +462,18 @@ final class CrawlEngine
                 'error' => null,
             ];
         }
-        return ['branches' => $branches, 'seen_urls' => [], 'offers_found' => 0, 'pages_fetched' => 0];
+        return [
+            'branches' => $branches,
+            'seen_urls' => [],
+            'seen_external_ids' => [],
+            'offers_found' => 0,
+            'unique_offers' => 0,
+            'pages_fetched' => 0,
+            'coverage' => null,
+            'source_total_elements' => null,
+            'source_total_pages' => null,
+            'stop_reason' => null,
+        ];
     }
 
     /** @param list<string> $seeds */

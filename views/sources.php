@@ -67,18 +67,44 @@ ob_start();
             <div><strong class="js-pass-status"><?= e($prog['status_fa']) ?></strong></div>
             <div class="muted js-pass-label"><?= e((string) ($prog['progress_label'] ?? '—')) ?></div>
             <div class="muted js-pass-stats">
-              آگهی گذر: <?= (int) $prog['offers_found'] ?>
+              یکتای گذر: <?= (int) ($prog['unique_offers_pass'] ?? $prog['offers_found'] ?? 0) ?>
+              · صفحات: <?= (int) ($prog['pages_fetched'] ?? 0) ?>
               · آخرین دسته: <?= (int) $prog['last_batch_offers'] ?>
               <?php if (!empty($prog['last_batch_at'])): ?>
                 · <?= fa_datetime($prog['last_batch_at']) ?>
               <?php endif; ?>
             </div>
+            <div class="muted js-pass-coverage">
+              <?php
+                $covComplete = !empty($prog['coverage_complete']);
+                $covScope = (string) ($prog['coverage_scope'] ?? '');
+                if ($covComplete) {
+                    echo 'مسیر پوشش: موجودی لیست API (نه نمونه صفحه اصلی)';
+                    if (!empty($prog['source_total_elements'])) {
+                        echo ' · کل منبع: ' . (int) $prog['source_total_elements'];
+                    }
+                } elseif ($covScope === 'homepage_or_html_sample') {
+                    echo 'مسیر پوشش: نمونه صفحه اصلی (موجودی کامل نیست)';
+                } elseif ($covScope !== '') {
+                    echo 'مسیر پوشش: ' . e($covScope);
+                } else {
+                    echo 'مسیر پوشش: هنوز مشخص نشده';
+                }
+                if (!empty($prog['stop_reason'])) {
+                    echo ' · توقف: ' . e((string) $prog['stop_reason']);
+                }
+              ?>
+            </div>
+            <div class="muted js-pass-db">DB تاریخی یکتا: <?= (int) ($prog['db_unique_offers'] ?? 0) ?></div>
           <?php else: ?>
             <span class="muted">—</span>
           <?php endif; ?>
         </td>
         <td class="last-success <?= $okRecent ? 'status-ok-text' : '' ?>"><?= fa_datetime($s['last_success_at']) ?></td>
-        <td class="js-offers-found"><?= (int) $s['last_offers_found'] ?></td>
+        <td class="js-offers-found" title="آگهی‌های یکتای آخرین گذر (جدا از DB تاریخی)">
+          <?= (int) ($prog['unique_offers_pass'] ?? $s['last_offers_found']) ?>
+          <div class="muted js-db-unique">DB: <?= (int) ($prog['db_unique_offers'] ?? 0) ?></div>
+        </td>
         <td class="last-error">
           <?php if ($hasError): ?>
             <span class="status-fail js-err"><?= e($s['last_error']) ?></span>

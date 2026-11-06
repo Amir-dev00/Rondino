@@ -1,5 +1,15 @@
 /** Pure helpers for browser-fetch (unit-tested). */
 
+/** Ensure proxy URLs keep schemes like socks5:// (digits allowed in scheme). */
+export function normalizeProxyServer(raw) {
+  let s = String(raw || '').trim();
+  if (!s) return null;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+    s = 'http://' + s;
+  }
+  return s;
+}
+
 export function normalizeUrl(raw) {
   const u = new URL(raw);
   u.hash = '';

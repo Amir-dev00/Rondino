@@ -27,11 +27,31 @@
       if (labelEl) labelEl.textContent = p.progress_label || '—';
       if (statsEl) {
         var when = p.last_batch_at_fa || '—';
-        statsEl.textContent = 'آگهی گذر: ' + (p.offers_found || 0)
+        statsEl.textContent = 'یکتای گذر: ' + (p.unique_offers_pass || p.offers_found || 0)
+          + ' · صفحات: ' + (p.pages_fetched || 0)
           + ' · آخرین دسته: ' + (p.last_batch_offers || 0)
           + (when && when !== '—' ? ' · ' + when : '');
       }
-      if (offersEl) offersEl.textContent = String(p.offers_found || 0);
+      var covEl = qs('.js-pass-coverage', row);
+      if (covEl) {
+        var covText = 'پوشش: هنوز مشخص نشده';
+        if (p.coverage_complete) {
+          covText = 'مسیر پوشش: موجودی لیست API (نه نمونه صفحه اصلی)'
+            + (p.source_total_elements ? (' · کل منبع: ' + p.source_total_elements) : '');
+        } else if (p.coverage_scope === 'homepage_or_html_sample') {
+          covText = 'مسیر پوشش: نمونه صفحه اصلی (موجودی کامل نیست)';
+        } else if (p.coverage_scope) {
+          covText = 'مسیر پوشش: ' + p.coverage_scope;
+        }
+        if (p.stop_reason) covText += ' · توقف: ' + p.stop_reason;
+        covEl.textContent = covText;
+      }
+      var dbEl = qs('.js-pass-db', row);
+      if (dbEl) dbEl.textContent = 'DB تاریخی یکتا: ' + (p.db_unique_offers || 0);
+      if (offersEl) {
+        offersEl.innerHTML = String(p.unique_offers_pass || p.offers_found || 0)
+          + '<div class="muted js-db-unique">DB: ' + (p.db_unique_offers || 0) + '</div>';
+      }
       const err = qs('.js-err', row);
       if (err && p.last_error) {
         err.className = 'status-fail js-err';
