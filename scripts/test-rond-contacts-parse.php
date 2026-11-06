@@ -72,4 +72,17 @@ if (is_file($saved) && filesize($saved) > 1000) {
     check(in_array('09354000066', $got, true), '10 saved live HTML yields seller mobile');
 }
 
+$ng = '<html><body>شماره ' . $sim
+    . '<script id="serverApp-state" type="application/json">'
+    . '{"single-sim-detail-' . $sim . '":{"code":"' . $code . '","simCardNumber":"' . $sim . '",'
+    . '"contactGroup":{"mainCallNumber":"09121242521","contacts":[{"callNumber":"09121242521"},{"callNumber":"02133020041"}]}}}'
+    . '</script></body></html>';
+$got = RondContacts::parse($ng, $code, $sim);
+sort($got);
+check($got === ['02133020041', '09121242521'], '11 ng-state contactGroup phones accepted');
+check(
+    RondContacts::parse($ng, 'WRONGCODE', $sim) === [],
+    '12 ng-state rejects mismatched advert code'
+);
+
 echo "All contact parse regressions passed\n";

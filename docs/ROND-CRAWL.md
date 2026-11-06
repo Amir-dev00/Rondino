@@ -100,7 +100,21 @@ Counts distinguish source records, excluded rows, repeated identities, unique ad
 
 ## Contact verification limitation
 
-Contact enrichment is intentionally conservative. It accepts seller telephone data when (1) a JSON-LD Product identifies both the advertisement SKU/productID and SIM with `seller.telephone`, or (2) the detail page contains the listing SIM and `tel:` links inside the public seller card (`اطلاعات تماس فروشنده` → `app-seller-shop-info-card` / `contact-button-advert`, before `مشخصات آگهی`). Script/style bundles are ignored so Angular shell strings cannot fake a match. Detail fetches wait for seller `tel:` hydration. Site footer/social links and unassociated phones remain `unresolved`. Public `/customer` probes returned null `mobileNumber`. This is still not complete coverage for every layout. Unresolved items get a one-day cooldown; request failures use bounded exponential cooldown, with at most five attempts. Controlled sampling: `php scripts/sample-contact-enrich.php 30`. Live filter checks: `node scripts/verify-special-type-filter.mjs` and `php scripts/verify-adapter-special-streams.php`.
+### Contact enrichment (public seller phones)
+
+**No bulk contact API was found.** Live network captures on Sims detail pages show seller phones in Angular SSR transfer-state (`#serverApp-state` / `contactGroup.mainCallNumber` + `contacts[].callNumber`), not in the listing search API and not via working `/sim-card-advert/{code}` or `/customer` JSON (500 / null). Guessed batch endpoints returned 404. Therefore 42k listings cannot be filled in a few minutes via legitimate batch requests.
+
+**Fast path (preferred locally):** after one Playwright homepage warm-up, fetch detail HTML with `context.request.get` and parse SSR `contactGroup` (plus HTML seller-card / JSON-LD fallbacks):
+
+```bat
+php scripts/crawl-rond-contacts-fast.php --limit=500 --batch=40
+```
+
+Measured sample (40 listings): ~34 verified/min, 40/40 verified, 0 unresolved, 0 failed → order-of-magnitude ~20 hours for ~42k remaining at that rate (not minutes). Create `storage/logs/crawl-worker.stop` for graceful stop. Do not run alongside `crawl-rond.php --contacts`.
+
+**Legacy path:** `php scripts/crawl-rond.php --contacts` (full page render per listing, ~5/min).
+
+Association rules: require matching `simCardNumber` (and advert `code` when `external_id` is not the SIM). Invalid/short numbers are dropped. Existing `offer_contacts` are never deleted. Unresolved: 1-day cooldown; failures: exponential backoff, max 5 attempts.
 
 ## Validation
 

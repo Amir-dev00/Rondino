@@ -15,15 +15,13 @@ final class RondContacts
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     }
 
-    /** Accept telephones only when associated with this listing's seller.
-     * Sources (in order): JSON-LD Product with matching SKU/productID+SIM, then the
-     * public "اطلاعات تماس فروشنده" block / tel: link on the detail page that also
-     * contains the listing SIM. Never invent numbers; unmatched layouts stay unresolved.
+    /**
+     * Accept telephones only when associated with this listing's seller.
+     * Priority: Angular SSR transfer-state contactGroup → JSON-LD Product → visible seller card.
      * @return list<string>
      */
     public static function parse(string $html, string $externalId, string $sim): array
     {
-        $dom = Dom::fromHtml($html);
         $phones = [];
         $accept = static function (string $raw) use (&$phones, $sim): void {
             $phone = Digits::only(Digits::normalize($raw));
@@ -34,21 +32,40 @@ final class RondContacts
                 $phones[$phone] = true;
             }
         };
+
+        foreach (self::parseNgStateContactGroup($html, $externalId, $sim) as $raw) {
+            $accept($raw);
+        }
+        if ($phones !== []) {
+            return array_map('strval', array_keys($phones));
+        }
+
+        $dom = Dom::fromHtml($html);
         $walk = function (mixed $value) use (&$walk, $accept, $externalId, $sim): void {
-            if (!is_array($value)) return;
+            if (!is_array($value)) {
+                return;
+            }
             $identity = (string) ($value['sku'] ?? $value['productID'] ?? $value['identifier'] ?? '');
             $number = Digits::only(Digits::normalize((string) ($value['name'] ?? '')));
             if ($identity === $externalId && str_contains($number, $sim)) {
                 $offers = $value['offers'] ?? [];
-                if (isset($offers['seller'])) $offers = [$offers];
+                if (isset($offers['seller'])) {
+                    $offers = [$offers];
+                }
                 foreach ($offers as $offer) {
                     $telephone = is_array($offer) ? ($offer['seller']['telephone'] ?? []) : [];
                     foreach ((array) $telephone as $raw) {
-                        if (is_string($raw)) $accept($raw);
+                        if (is_string($raw)) {
+                            $accept($raw);
+                        }
                     }
                 }
             }
-            foreach ($value as $child) if (is_array($child)) $walk($child);
+            foreach ($value as $child) {
+                if (is_array($child)) {
+                    $walk($child);
+                }
+            }
         };
         foreach ($dom->xpath('//script[@type="application/ld+json"]') as $script) {
             $walk(json_decode($script->textContent, true));
@@ -57,8 +74,7 @@ final class RondContacts
             return array_map('strval', array_keys($phones));
         }
 
-        // Public HTML seller card (live detail layout). Ignore script/style shells — the
-        // seller label string appears in Angular bundles before hydration.
+        // Visible seller card fallback (scripts/styles stripped — label strings appear in bundles).
         $visibleHtml = preg_replace('#<script\b[^>]*>[\s\S]*?</script>#iu', ' ', $html) ?? $html;
         $visibleHtml = preg_replace('#<style\b[^>]*>[\s\S]*?</style>#iu', ' ', $visibleHtml) ?? $visibleHtml;
         $visibleText = html_entity_decode(strip_tags($visibleHtml), ENT_QUOTES | ENT_HTML5, 'UTF-8');
@@ -70,8 +86,6 @@ final class RondContacts
             return [];
         }
 
-        // Region: seller heading → ad-spec section. Shop name may sit between the
-        // heading and tel: links (app-contact-button.contact-button-advert).
         $region = '';
         if (preg_match(
             '/اطلاعات\s*تماس\s*فروشنده([\s\S]{0,6000}?)(?:مشخصات\s*آگهی|<\/app-seller-shop-info-card>)/u',
@@ -96,7 +110,6 @@ final class RondContacts
                 }
             }
         }
-        // Fallback for simpler HTML fixtures / older layouts.
         if ($phones === [] && preg_match(
             '/اطلاعات\s*تماس\s*فروشنده[\s\S]{0,400}?href=["\']tel:([^"\']+)["\']/u',
             $visibleHtml,
@@ -114,16 +127,76 @@ final class RondContacts
         return array_map('strval', array_keys($phones));
     }
 
+    /**
+     * Public SSR transfer-state on Sims detail pages embeds contactGroup with call numbers.
+     * Observed key: single-sim-detail-{sim}. Requires simCardNumber match; advert code match
+     * when external_id is not the SIM itself.
+     * @return list<string>
+     */
+    public static function parseNgStateContactGroup(string $html, string $externalId, string $sim): array
+    {
+        if (!preg_match(
+            '/id=["\'](?:serverApp-state|ng-state)["\'][^>]*>([^<]*)</i',
+            $html,
+            $m
+        )) {
+            return [];
+        }
+        $raw = html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $raw = str_replace(['&q;', '&a;', '&s;', '&l;', '&g;'], ['"', '&', "'", '<', '>'], $raw);
+        $json = json_decode($raw, true);
+        if (!is_array($json)) {
+            return [];
+        }
+        $simDigits = Digits::only(Digits::normalize($sim));
+        $key = 'single-sim-detail-' . $sim;
+        $detail = $json[$key] ?? null;
+        if (!is_array($detail)) {
+            foreach ($json as $k => $v) {
+                if (is_array($v) && is_string($k) && str_contains($k, $simDigits)) {
+                    $detail = $v;
+                    break;
+                }
+            }
+        }
+        if (!is_array($detail)) {
+            return [];
+        }
+        $detailSim = Digits::only(Digits::normalize((string) ($detail['simCardNumber'] ?? '')));
+        if ($detailSim === '' || $detailSim !== $simDigits) {
+            return [];
+        }
+        $code = (string) ($detail['code'] ?? '');
+        // When we store a real advert code, require it; legacy rows may use SIM as external_id.
+        if ($externalId !== '' && $externalId !== $sim && $code !== '' && $code !== $externalId) {
+            return [];
+        }
+        $out = [];
+        $cg = $detail['contactGroup'] ?? null;
+        if (!is_array($cg)) {
+            return [];
+        }
+        if (isset($cg['mainCallNumber']) && is_string($cg['mainCallNumber'])) {
+            $out[] = $cg['mainCallNumber'];
+        }
+        foreach ($cg['contacts'] ?? [] as $c) {
+            if (is_array($c) && isset($c['callNumber']) && is_string($c['callNumber'])) {
+                $out[] = $c['callNumber'];
+            }
+        }
+        return $out;
+    }
+
     /** One bounded item, protected from concurrent workers. Failed/unknown pages have a cooldown. */
     public static function advance(): bool
     {
         $pdo = Database::pdo();
         self::ensureSchema($pdo);
         $lock = $pdo->query("SELECT GET_LOCK('rondino-contacts',0)")->fetchColumn();
-        if ((int) $lock !== 1) return false;
+        if ((int) $lock !== 1) {
+            return false;
+        }
         try {
-            // Prefer never-checked offers. Skip offers that already have verified seller phones.
-            // Revisit unresolved/failed only after retry_at; optional expiry can re-queue verified rows.
             $recheckDays = max(0, (int) config('rondino_contact_recheck_days', 0));
             $recheckSql = $recheckDays > 0
                 ? "OR (c.status='verified' AND c.checked_at IS NOT NULL AND c.checked_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$recheckDays} DAY))"
@@ -139,7 +212,9 @@ final class RondContacts
                 )
                 ORDER BY CASE WHEN c.offer_id IS NULL THEN 0 WHEN c.status='failed' THEN 1 ELSE 2 END, o.id
                 LIMIT 1")->fetch();
-            if (!$row) return false;
+            if (!$row) {
+                return false;
+            }
             $adapter = Registry::get('rond-ir');
             $res = $adapter->fetchDetail((string) $row['canonical_url']);
             $phones = $res['ok'] ? self::parse($res['body'], (string) $row['external_id'], $row['number']) : [];
@@ -151,14 +226,66 @@ final class RondContacts
             try {
                 $insert = $pdo->prepare("INSERT INTO offer_contacts (offer_id,phone,phone_type,scope,label)
                     VALUES (?,?,?,'seller','فروشنده') ON DUPLICATE KEY UPDATE scope='seller'");
-                foreach ($phones as $phone) $insert->execute([$row['id'], $phone, str_starts_with($phone, '09') ? 'mobile' : 'landline']);
+                foreach ($phones as $phone) {
+                    $insert->execute([$row['id'], $phone, str_starts_with($phone, '09') ? 'mobile' : 'landline']);
+                }
                 $pdo->prepare("INSERT INTO rond_contact_checks (offer_id,status,attempts,checked_at,retry_at,error)
                     VALUES (?,?,?,UTC_TIMESTAMP(),?,?) ON DUPLICATE KEY UPDATE status=VALUES(status),
                     attempts=VALUES(attempts),checked_at=VALUES(checked_at),retry_at=VALUES(retry_at),error=VALUES(error)")
-                    ->execute([$row['id'], $status, $attempt, $retry, $error !== null ? mb_substr($error,0,500) : null]);
+                    ->execute([$row['id'], $status, $attempt, $retry, $error !== null ? mb_substr($error, 0, 500) : null]);
                 $pdo->commit();
-            } catch (Throwable $e) { $pdo->rollBack(); throw $e; }
+            } catch (Throwable $e) {
+                $pdo->rollBack();
+                throw $e;
+            }
             return true;
-        } finally { $pdo->query("SELECT RELEASE_LOCK('rondino-contacts')"); }
+        } finally {
+            $pdo->query("SELECT RELEASE_LOCK('rondino-contacts')");
+        }
+    }
+
+    /**
+     * Persist phones for one offer (used by batch/session workers). Preserves existing rows.
+     * @param list<string> $phones
+     */
+    public static function persistResult(
+        PDO $pdo,
+        int $offerId,
+        string $status,
+        array $phones,
+        int $priorAttempts,
+        ?string $error
+    ): void {
+        self::ensureSchema($pdo);
+        $attempt = $priorAttempts + 1;
+        $retry = gmdate('Y-m-d H:i:s', time() + ($status === 'unresolved' ? 86400 : min(3600, 30 * 2 ** $attempt)));
+        $pdo->beginTransaction();
+        try {
+            $insert = $pdo->prepare(
+                "INSERT INTO offer_contacts (offer_id,phone,phone_type,scope,label)
+                 VALUES (?,?,?,'seller','فروشنده') ON DUPLICATE KEY UPDATE scope='seller'"
+            );
+            foreach ($phones as $phone) {
+                if (!is_string($phone) || $phone === '') {
+                    continue;
+                }
+                $insert->execute([$offerId, $phone, str_starts_with($phone, '09') ? 'mobile' : 'landline']);
+            }
+            $pdo->prepare(
+                "INSERT INTO rond_contact_checks (offer_id,status,attempts,checked_at,retry_at,error)
+                 VALUES (?,?,?,UTC_TIMESTAMP(),?,?) ON DUPLICATE KEY UPDATE status=VALUES(status),
+                 attempts=VALUES(attempts),checked_at=VALUES(checked_at),retry_at=VALUES(retry_at),error=VALUES(error)"
+            )->execute([
+                $offerId,
+                $status,
+                $attempt,
+                $retry,
+                $error !== null ? mb_substr($error, 0, 500) : null,
+            ]);
+            $pdo->commit();
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
     }
 }
