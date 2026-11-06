@@ -3,19 +3,22 @@ declare(strict_types=1);
 /**
  * Fast contact enrichment: persistent Playwright session + bounded concurrent SSR fetches.
  *
- *   php scripts/crawl-rond-contacts-fast.php [--limit=200] [--batch=60] [--concurrency=4] [--dry-run]
+ *   php scripts/crawl-rond-contacts-fast.php --limit=200 [--batch=60] [--concurrency=6] [--dry-run]
+ *   php scripts/crawl-rond-contacts-fast.php --full [--batch=60] [--concurrency=6]   # full queue (explicit)
  *
  * - One Chromium warm-up for the whole process (stdio Node pool).
  * - Deduplicates identical detail URLs within each batch; associates phones per offer code+SIM.
  * - Adaptive concurrency inside Node (cap via --concurrency).
  * - Refuses if another contact worker / crawl-rond pid is alive or MySQL lock held.
+ * - Full-queue runs require --full (safety gate).
  */
 require dirname(__DIR__) . '/app/bootstrap.php';
 
-$limit = 0; // 0 = until queue empty / stop file
+$limit = 0; // 0 = until queue empty / stop file (only with --full)
 $batch = 60;
 $concurrency = 6;
 $dry = false;
+$full = false;
 foreach (array_slice($argv, 1) as $a) {
     if (preg_match('/^--limit=(\d+)$/', $a, $m)) {
         $limit = max(0, min(50000, (int) $m[1]));
@@ -29,6 +32,13 @@ foreach (array_slice($argv, 1) as $a) {
     if ($a === '--dry-run') {
         $dry = true;
     }
+    if ($a === '--full') {
+        $full = true;
+    }
+}
+if ($limit <= 0 && !$full) {
+    fwrite(STDERR, "Refusing: pass --limit=N for a controlled batch, or --full for the entire queue.\n");
+    exit(2);
 }
 
 $root = dirname(__DIR__);
@@ -164,6 +174,7 @@ try {
         . " concurrency={$concurrency}\n";
 
     $reqId = 0;
+    $seenOfferIds = []; // dry-run must not re-fetch the same offers forever
     while (!is_file($stopFile)) {
         $done = $stats['verified'] + $stats['unresolved'] + $stats['failed'];
         if ($limit > 0 && $done >= $limit) {
@@ -173,6 +184,9 @@ try {
         if ($limit > 0) {
             $takeN = min($batch, $limit - $done);
         }
+        // Over-fetch when skipping in-memory dry-run IDs.
+        $fetchLimit = $takeN + ($dry ? count($seenOfferIds) : 0);
+        $fetchLimit = min(500, max($takeN, $fetchLimit));
         $rows = $pdo->query(
             "SELECT o.id, o.external_id, o.canonical_url, n.number AS sim, COALESCE(c.attempts,0) attempts
              FROM offers o
@@ -183,10 +197,20 @@ try {
              WHERE s.slug='rond-ir' AND s.is_enabled=1 AND oc.offer_id IS NULL
                AND (c.offer_id IS NULL OR (c.retry_at <= UTC_TIMESTAMP() AND c.attempts < 5))
              ORDER BY CASE WHEN c.offer_id IS NULL THEN 0 WHEN c.status='failed' THEN 1 ELSE 2 END, o.id
-             LIMIT {$takeN}"
+             LIMIT {$fetchLimit}"
         )->fetchAll(PDO::FETCH_ASSOC);
+        if ($seenOfferIds !== []) {
+            $rows = array_values(array_filter(
+                $rows,
+                static fn (array $r): bool => !isset($seenOfferIds[(int) $r['id']])
+            ));
+        }
+        $rows = array_slice($rows, 0, $takeN);
         if ($rows === []) {
             break;
+        }
+        foreach ($rows as $row) {
+            $seenOfferIds[(int) $row['id']] = true;
         }
 
         // Group by detail URL — one network fetch per unique document.
@@ -206,6 +230,7 @@ try {
             $byResult[(string) ($r['url'] ?? '')] = $r;
         }
 
+        $persistItems = [];
         foreach ($byUrl as $url => $offers) {
             $r = $byResult[$url] ?? null;
             $html = is_array($r) ? (string) ($r['html'] ?? '') : '';
@@ -215,9 +240,13 @@ try {
                 if (!$fetchOk) {
                     $stats['failed']++;
                     $err = is_array($r) ? (string) ($r['error'] ?? 'fetch_failed') : 'missing_result';
-                    if (!$dry) {
-                        RondContacts::persistResult($pdo, (int) $row['id'], 'failed', [], (int) $row['attempts'], $err);
-                    }
+                    $persistItems[] = [
+                        'offer_id' => (int) $row['id'],
+                        'status' => 'failed',
+                        'phones' => [],
+                        'prior_attempts' => (int) $row['attempts'],
+                        'error' => $err,
+                    ];
                     echo '[' . gmdate('H:i:s') . "] failed {$row['sim']} {$err}\n";
                     continue;
                 }
@@ -226,25 +255,29 @@ try {
                 if ($phones) {
                     $stats['verified']++;
                     $stats['phones'] += count($phones);
-                    if (!$dry) {
-                        RondContacts::persistResult($pdo, (int) $row['id'], 'verified', $phones, (int) $row['attempts'], null);
-                    }
+                    $persistItems[] = [
+                        'offer_id' => (int) $row['id'],
+                        'status' => 'verified',
+                        'phones' => $phones,
+                        'prior_attempts' => (int) $row['attempts'],
+                        'error' => null,
+                    ];
                     echo '[' . gmdate('H:i:s') . "] verified {$row['sim']} " . implode(',', $phones) . "\n";
                 } else {
                     $stats['unresolved']++;
-                    if (!$dry) {
-                        RondContacts::persistResult(
-                            $pdo,
-                            (int) $row['id'],
-                            'unresolved',
-                            [],
-                            (int) $row['attempts'],
-                            'Seller/ad association not verified in detail HTML'
-                        );
-                    }
+                    $persistItems[] = [
+                        'offer_id' => (int) $row['id'],
+                        'status' => 'unresolved',
+                        'phones' => [],
+                        'prior_attempts' => (int) $row['attempts'],
+                        'error' => 'Seller/ad association not verified in detail HTML',
+                    ];
                     echo '[' . gmdate('H:i:s') . "] unresolved {$row['sim']}\n";
                 }
             }
+        }
+        if (!$dry && $persistItems !== []) {
+            RondContacts::persistBatch($pdo, $persistItems);
         }
         $stats['batches']++;
         $metrics = $msg['metrics'] ?? [];
