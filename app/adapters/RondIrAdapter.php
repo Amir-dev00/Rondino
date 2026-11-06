@@ -17,6 +17,18 @@ final class RondIrAdapter extends BaseAdapter
     private const OPERATOR_ID = '65cb3414c8133a36e6f8708f';
     private const SORT = 'sort=advertSpecialType,desc&sort=lastUpdateDateMillis,desc&sort=createDateMillis,desc';
 
+    /**
+     * Observed in live list payloads: VIP packs early pages, FREE packs later pages
+     * under the default multi-field sort. Incremental mode therefore streams each type
+     * separately so a new FREE listing cannot hide behind known VIP pages.
+     *
+     * @var list<string>
+     */
+    private const DEFAULT_SPECIAL_TYPES = ['VIP', 'FREE'];
+
+    /** @var 'full'|'incremental' */
+    private static string $crawlMode = 'full';
+
     /** @var array<string,string> */
     private const STATUS_FA = [
         'LIKE_NEW' => 'در حد صفر',
@@ -36,9 +48,43 @@ final class RondIrAdapter extends BaseAdapter
     public function name(): string { return 'rond.ir'; }
     public function baseUrl(): string { return 'https://rond.ir'; }
 
+    public function setCrawlMode(string $mode): void
+    {
+        self::$crawlMode = $mode === 'incremental' ? 'incremental' : 'full';
+    }
+
+    public function crawlMode(): string
+    {
+        return self::$crawlMode;
+    }
+
+    /** @return list<string> */
+    public function incrementalSpecialTypes(): array
+    {
+        $configured = config('rondino_incremental_special_types', self::DEFAULT_SPECIAL_TYPES);
+        if (!is_array($configured) || $configured === []) {
+            return self::DEFAULT_SPECIAL_TYPES;
+        }
+        $out = [];
+        foreach ($configured as $t) {
+            $t = strtoupper(trim((string) $t));
+            if ($t !== '') {
+                $out[$t] = $t;
+            }
+        }
+        return array_values($out !== [] ? $out : self::DEFAULT_SPECIAL_TYPES);
+    }
+
     public function seedUrls(): array
     {
         // Verified public 0912 listing API (not the rotating homepage sample).
+        if (self::$crawlMode === 'incremental') {
+            $seeds = [];
+            foreach ($this->incrementalSpecialTypes() as $type) {
+                $seeds[] = $this->apiPageUrl(0, $type);
+            }
+            return $seeds;
+        }
         return [$this->apiPageUrl(0)];
     }
 
@@ -185,16 +231,44 @@ final class RondIrAdapter extends BaseAdapter
                 return null;
             }
         }
-        return $this->apiPageUrl($nextZeroBased);
+        $special = $this->specialTypeFromUrl($pageUrl);
+        return $this->apiPageUrl($nextZeroBased, $special);
     }
 
-    private function apiPageUrl(int $zeroBasedPage): string
+    private function apiPageUrl(int $zeroBasedPage, ?string $specialType = null): string
     {
-        return $this->baseUrl() . self::API_PATH
+        $url = $this->baseUrl() . self::API_PATH
             . '?page=' . $zeroBasedPage
             . '&size=' . self::PAGE_SIZE
             . '&' . self::SORT
             . '&precode=0912';
+        if ($specialType !== null && $specialType !== '') {
+            // Client-side stream marker; also used to set advertSpecialTypeIn in POST body.
+            $url .= '&rondinoSpecial=' . rawurlencode($specialType);
+        }
+        return $url;
+    }
+
+    private function specialTypeFromUrl(string $url): ?string
+    {
+        parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+        $special = trim((string) ($query['rondinoSpecial'] ?? ''));
+        return $special !== '' ? $special : null;
+    }
+
+    /** Strip client-only markers before sending the URL to Node/Playwright. */
+    private function upstreamApiUrl(string $url): string
+    {
+        $parts = parse_url($url);
+        if (($parts['path'] ?? '') === '' || !isset($parts['query'])) {
+            return $url;
+        }
+        parse_str((string) $parts['query'], $query);
+        unset($query['rondinoSpecial']);
+        $q = http_build_query($query);
+        return ($parts['scheme'] ?? 'https') . '://' . ($parts['host'] ?? 'rond.ir')
+            . ($parts['path'] ?? self::API_PATH)
+            . ($q !== '' ? ('?' . $q) : '');
     }
 
     private function isApiListUrl(string $url): bool
@@ -468,10 +542,12 @@ final class RondIrAdapter extends BaseAdapter
         $diag = $cacheDir . DIRECTORY_SEPARATOR . 'rond-api-' . $token . '.diag.json';
 
         $env = $this->browserEnv();
-        $env['RONDINO_API_POST_BODY'] = json_encode($this->searchBody0912(), JSON_UNESCAPED_UNICODE);
+        $env['RONDINO_API_POST_BODY'] = json_encode($this->searchBody0912($url), JSON_UNESCAPED_UNICODE);
+        $fetchUrl = $detail ? $url : $this->upstreamApiUrl($url);
+        $special = $detail ? null : $this->specialTypeFromUrl($url);
 
         $scriptsDir = $root . DIRECTORY_SEPARATOR . 'scripts';
-        $cmd = [$node, $script, $url, $out, $diag];
+        $cmd = [$node, $script, $fetchUrl, $out, $diag];
         if ($detail) $cmd[] = '--detail';
         $descriptors = [
             0 => ['pipe', 'r'],
@@ -481,7 +557,7 @@ final class RondIrAdapter extends BaseAdapter
         $proc = @proc_open($cmd, $descriptors, $pipes, $scriptsDir, $env, ['bypass_shell' => true]);
         if (!is_resource($proc)) {
             $cmdLine = escapeshellarg($node) . ' ' . escapeshellarg($script) . ' '
-                . escapeshellarg($url) . ' ' . escapeshellarg($out) . ' ' . escapeshellarg($diag) . ($detail ? ' --detail' : '');
+                . escapeshellarg($fetchUrl) . ' ' . escapeshellarg($out) . ' ' . escapeshellarg($diag) . ($detail ? ' --detail' : '');
             $proc = proc_open($cmdLine, $descriptors, $pipes, $scriptsDir, $env);
         }
         if (!is_resource($proc)) {
@@ -523,9 +599,9 @@ final class RondIrAdapter extends BaseAdapter
             $envelope = json_decode($body, true);
             foreach (($envelope['pages'] ?? []) as $entry) {
                 $entryUrl = (string) ($entry['url'] ?? '');
-                // URL query serialization may differ; canonicalize to our URL format.
+                // URL query serialization may differ; canonicalize and keep special-type stream.
                 parse_str((string) parse_url($entryUrl, PHP_URL_QUERY), $query);
-                $entryUrl = $this->apiPageUrl((int) ($query['page'] ?? 0));
+                $entryUrl = $this->apiPageUrl((int) ($query['page'] ?? 0), $special);
                 self::$prefetchedPages[$entryUrl] = ['expires' => time() + 60, 'response' => [
                     'ok' => true, 'status' => 200, 'body' => (string) $entry['body'],
                     'error' => null, 'final_url' => $entryUrl, 'headers' => [],
@@ -566,12 +642,13 @@ final class RondIrAdapter extends BaseAdapter
     }
 
     /** @return array<string,mixed> */
-    private function searchBody0912(): array
+    private function searchBody0912(?string $forUrl = null): array
     {
+        $special = $forUrl ? $this->specialTypeFromUrl($forUrl) : null;
         return [
             'advertSellTypeIn' => null,
             'advertSellTypeNotIn' => null,
-            'advertSpecialTypeIn' => null,
+            'advertSpecialTypeIn' => $special !== null ? [$special] : null,
             'advertSpecialTypeNotIn' => null,
             'advertPriceTypeIn' => null,
             'advertPriceTypeNotIn' => null,

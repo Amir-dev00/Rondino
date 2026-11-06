@@ -72,6 +72,19 @@ final class CrawlEngine
             ];
         }
 
+        // Resume must honor stored crawl_mode before seedUrls() (incremental uses
+        // one seed URL per advertSpecialType stream).
+        $effectiveMode = $mode;
+        if (!$restart && !empty($pass['branch_state'])) {
+            $peek = json_decode((string) $pass['branch_state'], true);
+            if (is_array($peek) && (($peek['crawl_mode'] ?? '') === 'incremental' || ($peek['crawl_mode'] ?? '') === 'full')) {
+                $effectiveMode = (string) $peek['crawl_mode'];
+            }
+        }
+        if (method_exists($adapter, 'setCrawlMode')) {
+            $adapter->setCrawlMode($effectiveMode);
+        }
+
         $seeds = array_values($adapter->seedUrls());
         if ($seeds === []) {
             $this->markFinished($pdo, $pass, 'blocked', 'بدون seed', $now);
@@ -358,20 +371,27 @@ final class CrawlEngine
             $state['branches'][$i]['last_fp'] = $fp;
             $state['branches'][$i]['retried'] = false;
 
-            // Incremental early-stop: API list rows omit update millis; rely on sort order
-            // (newest updates first within special-type) + overlap of already-known IDs.
+            // Incremental early-stop is per branch/stream. Global consecutive_known was
+            // unsafe: advertSpecialType DESC packs VIP pages first, so 3 known VIP pages
+            // could stop before any FREE pages (where brand-new FREE ads still appear).
+            // Each seed stream (optionally filtered by advertSpecialTypeIn) tracks its own
+            // known-page streak and page budget.
             $newBefore = (int) ($result['new_before'] ?? 0);
+            $branchKnown = (int) ($state['branches'][$i]['consecutive_known_pages'] ?? 0);
+            $branchPages = (int) ($state['branches'][$i]['pages_fetched'] ?? 0) + 1;
+            $state['branches'][$i]['pages_fetched'] = $branchPages;
             if ($crawlMode === 'incremental' && $found > 0 && $newBefore === 0) {
-                $state['consecutive_known_pages'] = (int) ($state['consecutive_known_pages'] ?? 0) + 1;
+                $branchKnown++;
             } elseif ($crawlMode === 'incremental') {
-                $state['consecutive_known_pages'] = 0;
+                $branchKnown = 0;
             }
+            $state['branches'][$i]['consecutive_known_pages'] = $branchKnown;
+            // Keep legacy aggregate for UI/metrics only (not used for stop decisions).
+            $state['consecutive_known_pages'] = $branchKnown;
             $overlapNeed = max(1, (int) ($state['incremental_overlap_pages'] ?? 3));
             $maxIncPages = max($overlapNeed, (int) ($state['incremental_max_pages'] ?? 50));
-            $hitOverlap = $crawlMode === 'incremental'
-                && (int) ($state['consecutive_known_pages'] ?? 0) >= $overlapNeed;
-            $hitCap = $crawlMode === 'incremental'
-                && (int) ($state['pages_fetched'] ?? 0) >= $maxIncPages;
+            $hitOverlap = $crawlMode === 'incremental' && $branchKnown >= $overlapNeed;
+            $hitCap = $crawlMode === 'incremental' && $branchPages >= $maxIncPages;
             if ($hitOverlap || $hitCap) {
                 $state['branches'][$i]['status'] = 'done';
                 $state['branches'][$i]['error'] = null;
@@ -384,8 +404,8 @@ final class CrawlEngine
                 $state['coverage']['is_complete_inventory'] = false;
                 $state['coverage']['scope'] = 'incremental_overlap';
                 $state['coverage']['label'] = $hitOverlap
-                    ? 'Incremental overlap reached (known external_id pages)'
-                    : 'Incremental page cap reached — run --full to reconcile';
+                    ? 'Incremental per-stream overlap reached (known external_id pages)'
+                    : 'Incremental per-stream page cap reached — run --full to reconcile';
                 $next = null; // force finish path below
             }
 

@@ -15,15 +15,26 @@ final class RondContacts
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     }
 
-    /** Only accept telephone values explicitly associated with this ad's seller in structured data.
-     * Unrecognized layouts remain unresolved for later selector verification, never guessed.
+    /** Accept telephones only when associated with this listing's seller.
+     * Sources (in order): JSON-LD Product with matching SKU/productID+SIM, then the
+     * public "اطلاعات تماس فروشنده" block / tel: link on the detail page that also
+     * contains the listing SIM. Never invent numbers; unmatched layouts stay unresolved.
      * @return list<string>
      */
     public static function parse(string $html, string $externalId, string $sim): array
     {
         $dom = Dom::fromHtml($html);
         $phones = [];
-        $walk = function (mixed $value) use (&$walk, &$phones, $externalId, $sim): void {
+        $accept = static function (string $raw) use (&$phones, $sim): void {
+            $phone = Digits::only(Digits::normalize($raw));
+            if (str_starts_with($phone, '98') && strlen($phone) === 12) {
+                $phone = '0' . substr($phone, 2);
+            }
+            if (preg_match('/^0\d{10}$/', $phone) && $phone !== $sim) {
+                $phones[$phone] = true;
+            }
+        };
+        $walk = function (mixed $value) use (&$walk, $accept, $externalId, $sim): void {
             if (!is_array($value)) return;
             $identity = (string) ($value['sku'] ?? $value['productID'] ?? $value['identifier'] ?? '');
             $number = Digits::only(Digits::normalize((string) ($value['name'] ?? '')));
@@ -33,10 +44,7 @@ final class RondContacts
                 foreach ($offers as $offer) {
                     $telephone = is_array($offer) ? ($offer['seller']['telephone'] ?? []) : [];
                     foreach ((array) $telephone as $raw) {
-                        if (!is_string($raw)) continue;
-                        $phone = Digits::only(Digits::normalize($raw));
-                        if (str_starts_with($phone, '98') && strlen($phone) === 12) $phone = '0' . substr($phone, 2);
-                        if (preg_match('/^0\d{10}$/', $phone) && $phone !== $sim) $phones[$phone] = true;
+                        if (is_string($raw)) $accept($raw);
                     }
                 }
             }
@@ -44,6 +52,64 @@ final class RondContacts
         };
         foreach ($dom->xpath('//script[@type="application/ld+json"]') as $script) {
             $walk(json_decode($script->textContent, true));
+        }
+        if ($phones !== []) {
+            return array_map('strval', array_keys($phones));
+        }
+
+        // Public HTML seller card (live detail layout). Ignore script/style shells — the
+        // seller label string appears in Angular bundles before hydration.
+        $visibleHtml = preg_replace('#<script\b[^>]*>[\s\S]*?</script>#iu', ' ', $html) ?? $html;
+        $visibleHtml = preg_replace('#<style\b[^>]*>[\s\S]*?</style>#iu', ' ', $visibleHtml) ?? $visibleHtml;
+        $visibleText = html_entity_decode(strip_tags($visibleHtml), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $visibleText = preg_replace('/\s+/u', ' ', $visibleText) ?? $visibleText;
+
+        $simDigits = Digits::only(Digits::normalize($sim));
+        $plainDigits = Digits::only(Digits::normalize($visibleText));
+        if ($simDigits === '' || !str_contains($plainDigits, $simDigits)) {
+            return [];
+        }
+
+        // Region: seller heading → ad-spec section. Shop name may sit between the
+        // heading and tel: links (app-contact-button.contact-button-advert).
+        $region = '';
+        if (preg_match(
+            '/اطلاعات\s*تماس\s*فروشنده([\s\S]{0,6000}?)(?:مشخصات\s*آگهی|<\/app-seller-shop-info-card>)/u',
+            $visibleHtml,
+            $rm
+        )) {
+            $region = $rm[1];
+        }
+        if ($region !== '') {
+            if (preg_match_all(
+                '/contact-button-advert[^>]{0,160}href=["\']tel:([^"\']+)["\']/iu',
+                $region,
+                $tm
+            )) {
+                foreach ($tm[1] as $raw) {
+                    $accept(urldecode((string) $raw));
+                }
+            }
+            if ($phones === [] && preg_match_all('/href=["\']tel:([^"\']+)["\']/iu', $region, $tm2)) {
+                foreach ($tm2[1] as $raw) {
+                    $accept(urldecode((string) $raw));
+                }
+            }
+        }
+        // Fallback for simpler HTML fixtures / older layouts.
+        if ($phones === [] && preg_match(
+            '/اطلاعات\s*تماس\s*فروشنده[\s\S]{0,400}?href=["\']tel:([^"\']+)["\']/u',
+            $visibleHtml,
+            $m
+        )) {
+            $accept(urldecode($m[1]));
+        }
+        if ($phones === [] && preg_match(
+            '/اطلاعات\s*تماس\s*فروشنده\s*((?:\d[\d\s-]{8,18}\d))/u',
+            $visibleText,
+            $m2
+        )) {
+            $accept($m2[1]);
         }
         return array_map('strval', array_keys($phones));
     }

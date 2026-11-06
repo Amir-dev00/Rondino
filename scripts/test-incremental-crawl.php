@@ -237,4 +237,91 @@ check($r['pass_status'] === 'completed', '7 repeat incremental completes');
 check((int) $pdo->query('SELECT COUNT(*) FROM offers')->fetchColumn() === $offersBefore, '7 offer count stable');
 check((int) $pdo->query('SELECT COUNT(*) FROM price_observations')->fetchColumn() === $obsBefore, '7 observations stable');
 
+// --- Per-special-type streams: new FREE must not hide behind known VIP pages ---
+class MultiStreamFixture extends IncrementalFixture
+{
+    /** @var array<string,list<list<array<string,mixed>>>> */
+    public array $bySpecial = [];
+    public function seedUrls(): array
+    {
+        return [
+            'https://fixture.invalid/api?page=0&rondinoSpecial=VIP',
+            'https://fixture.invalid/api?page=0&rondinoSpecial=FREE',
+        ];
+    }
+    public function fetchPage(string $url, int $timeout = 25): ?array
+    {
+        parse_str((string) parse_url($url, PHP_URL_QUERY), $q);
+        $page = (int) ($q['page'] ?? 0);
+        $special = (string) ($q['rondinoSpecial'] ?? 'VIP');
+        $stream = $this->bySpecial[$special] ?? [];
+        $content = $stream[$page] ?? [];
+        $body = json_encode([
+            'content' => $content,
+            'number' => $page,
+            'size' => 40,
+            'totalPages' => max(1, count($stream)),
+            'totalElements' => array_sum(array_map('count', $stream)),
+            'last' => $page >= count($stream) - 1,
+            'pageable' => ['pageNumber' => $page],
+        ], JSON_UNESCAPED_UNICODE);
+        return ['ok' => true, 'status' => 200, 'body' => $body, 'final_url' => $url, 'error' => null];
+    }
+    public function nextPageUrl(string $html, string $pageUrl, int $pageIndex): ?string
+    {
+        $json = json_decode($html, true);
+        if (($json['last'] ?? false) === true) {
+            return null;
+        }
+        parse_str((string) parse_url($pageUrl, PHP_URL_QUERY), $q);
+        $special = (string) ($q['rondinoSpecial'] ?? 'VIP');
+        $next = (int) $json['number'] + 1;
+        return 'https://fixture.invalid/api?page=' . $next . '&rondinoSpecial=' . rawurlencode($special);
+    }
+}
+
+$multi = new MultiStreamFixture();
+$all['rond-ir'] = $multi;
+$map->setValue(null, $all);
+// Seed DB as if VIP inventory was already known; FREE has a brand-new head listing.
+$pdo->exec('DELETE FROM price_observations');
+$pdo->exec('DELETE FROM offers');
+$pdo->exec('DELETE FROM crawl_passes');
+$multi->bySpecial = [
+    'VIP' => [
+        [$mk('VIP1', '09121111111', 1000), $mk('VIP2', '09121111112', 2000)],
+    ],
+    'FREE' => [
+        [$mk('FREE1', '09121111113', 3000), $mk('FREE1b', '09121111115', 3100)],
+    ],
+];
+$pdo->exec("UPDATE source_sync_state SET overlap_pages=2, incremental_max_pages=20");
+$engine = new CrawlEngine();
+$r = runPass($engine, 'full', true);
+check($r['pass_status'] === 'completed', '8 multi-stream full seeds inventory');
+check((int) $pdo->query('SELECT COUNT(*) FROM offers')->fetchColumn() === 4, '8 four offers after full');
+
+$multi->bySpecial = [
+    'VIP' => [
+        [$mk('VIP1', '09121111111', 1000)], // known
+        [$mk('VIP2', '09121111112', 2000)], // known -> VIP overlap=2
+        [$mk('VIP_DEEP', '09121111199', 9999)], // beyond overlap; must not block FREE discovery
+    ],
+    'FREE' => [
+        [$mk('FREE_NEW', '09121111114', 4000)], // new at FREE head
+        [$mk('FREE1', '09121111113', 3000)], // known
+        [$mk('FREE1b', '09121111115', 3100)], // known -> FREE overlap=2
+    ],
+];
+
+$engine = new CrawlEngine();
+$r = runPass($engine, 'incremental', true);
+check($r['pass_status'] === 'completed', '8 incremental multi-stream completes');
+check((int) $pdo->query("SELECT COUNT(*) FROM offers WHERE external_id='FREE_NEW'")->fetchColumn() === 1, '8 new FREE listing inserted despite known VIP pages');
+check((int) $pdo->query("SELECT COUNT(*) FROM offers WHERE external_id='VIP_DEEP'")->fetchColumn() === 0, '8 deep VIP beyond overlap not fetched');
+$state = json_decode((string) $pdo->query("SELECT branch_state FROM crawl_passes WHERE source_id={$sid} ORDER BY id DESC LIMIT 1")->fetchColumn(), true);
+$reasons = (string) ($state['stop_reason'] ?? '');
+check(str_contains($reasons, 'incremental_overlap_reached'), '8 stop includes overlap');
+check(count($state['branches'] ?? []) === 2, '8 two special-type branches');
+
 echo "All incremental crawl regressions passed\n";

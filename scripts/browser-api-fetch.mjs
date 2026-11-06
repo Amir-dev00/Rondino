@@ -176,7 +176,24 @@ async function runWithProxy(proxyServer) {
       if (target.origin !== 'https://rond.ir' || !/^\/Sims\/0912\d{7}$/.test(target.pathname)) throw new Error('Invalid detail URL');
       const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: Math.min(30000, remainingMs()) });
       if (!response || !response.ok()) throw new Error('Detail HTTP ' + response?.status());
-      await page.waitForTimeout(1500);
+      // Seller tel: hydrates after the Angular shell; label text alone is not enough.
+      const waitMs = Math.min(20000, Math.max(3000, remainingMs() - 2000));
+      try {
+        await page.waitForFunction(
+          () => {
+            const body = document.body?.innerText || '';
+            if (!body.includes('اطلاعات تماس فروشنده')) return false;
+            const tel = document.querySelector('a[href^="tel:"]');
+            if (tel && /tel:0\d{10}/i.test(tel.getAttribute('href') || '')) return true;
+            // Contiguous or spaced Iranian mobile after the seller label.
+            return /اطلاعات\s*تماس\s*فروشنده\s*0\d[\d\s-]{8,18}\d/.test(body);
+          },
+          { timeout: waitMs }
+        );
+      } catch {
+        // Fall through and persist whatever rendered; PHP parser stays conservative.
+        await page.waitForTimeout(Math.min(2500, remainingMs()));
+      }
       const html = await safeContent(page);
       if (looksLikeChallenge(html)) throw new Error('Detail challenge observed');
       fs.mkdirSync(path.dirname(out), { recursive: true });

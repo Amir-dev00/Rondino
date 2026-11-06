@@ -32,9 +32,11 @@ return [
     'rondino_api_batch_size' => 3,
     // Set 1 to let the local worker drain seller-contact enrichment when inventory is idle.
     'rond_enrich_contacts' => 0,
-    // Incremental crawl (list API omits update millis; overlap of known IDs + periodic --full)
+    // Incremental crawl (list API omits update millis; overlap of known IDs + periodic --full).
+    // Incremental mode streams each advertSpecialType separately (default VIP then FREE).
     'rondino_incremental_overlap_pages' => 3,
-    'rondino_incremental_max_pages' => 50,
+    'rondino_incremental_max_pages' => 50, // per special-type stream
+    'rondino_incremental_special_types' => ['VIP', 'FREE'],
     'rondino_full_reconcile_every_hours' => 168,
     // 0 = never re-fetch verified contacts; >0 = days before optional recheck
     'rondino_contact_recheck_days' => 0,
