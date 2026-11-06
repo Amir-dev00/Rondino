@@ -14,6 +14,8 @@ if (!is_file(config_path())) {
     exit(1);
 }
 
+$workerLock = fopen(dirname(__DIR__) . '/storage/logs/crawl-worker.lock', 'c');
+if (!$workerLock || !flock($workerLock, LOCK_EX | LOCK_NB)) { fwrite(STDERR, "Worker already running\n"); exit(0); }
 $stopFile = dirname(__DIR__) . '/storage/logs/crawl-worker.stop';
 $pidFile = dirname(__DIR__) . '/storage/logs/crawl-worker.pid';
 @file_put_contents($pidFile, (string) getmypid());
@@ -47,7 +49,7 @@ while (true) {
         $idleLoops++;
         // Also auto-drain paused passes without a job (resume after browser closed)
         $paused = Database::pdo()->query(
-            "SELECT s.slug FROM crawl_passes p JOIN sources s ON s.id=p.source_id WHERE p.status IN ('paused','running') LIMIT 8"
+            "SELECT s.slug FROM crawl_passes p JOIN sources s ON s.id=p.source_id WHERE s.is_enabled=1 AND s.slug <> 'setaresim' AND p.status IN ('paused','running') LIMIT 8"
         )->fetchAll(PDO::FETCH_COLUMN);
         if ($paused) {
             foreach ($paused as $slug) {
@@ -55,6 +57,10 @@ while (true) {
             }
             $idleLoops = 0;
             usleep(50000);
+            continue;
+        }
+        if ((int) config('rond_enrich_contacts', 0) === 1 && RondContacts::advance()) {
+            sleep(2);
             continue;
         }
         usleep(400000);
@@ -74,7 +80,7 @@ while (true) {
 
     $pdo = Database::pdo();
     $slugs = $pdo->query('SELECT slug FROM sources WHERE is_enabled = 1 ORDER BY id')->fetchAll(PDO::FETCH_COLUMN);
-    $forceRestart = $mode === 'full' || $mode === 'restart';
+    $forceRestart = ($mode === 'full' || $mode === 'restart') && empty($job['resumed']);
 
     // Start/resume all sources
     foreach ($slugs as $slug) {
@@ -102,7 +108,8 @@ while (true) {
             }
         }
         if ($left === []) {
-            CrawlJob::touch($jobId, 'completed', 'گذر کامل شد', CrawlMetrics::snapshot());
+            $hasFailure = count(array_filter($progress, static fn ($p) => in_array($p['status'], ['partial','blocked'], true))) > 0;
+            CrawlJob::touch($jobId, $hasFailure ? 'failed' : 'completed', 'گذر کامل شد', CrawlMetrics::snapshot());
             echo '[' . gmdate('H:i:s') . "] job #{$jobId} completed\n";
             break;
         }
@@ -114,9 +121,10 @@ while (true) {
             $engine->advanceSource($slug, false, max(1, (int) config('crawl_page_budget', 4)));
         }
         CrawlJob::touch($jobId, 'running', 'باقی‌مانده: ' . count($left), CrawlMetrics::snapshot());
-        usleep(20000);
+        sleep(2);
     }
 }
 
 @unlink($pidFile);
 echo "worker exit\n";
+

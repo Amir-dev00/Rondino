@@ -42,7 +42,12 @@ final class OfferStore
             $simIds = $this->ensureSims($pdo, array_map(static fn ($r) => (string) $r['sim_number'], $valid));
             $externalIds = array_map(static fn ($r) => (string) $r['external_id'], $valid);
             $existingMap = $this->loadExisting($pdo, $sourceId, $externalIds);
-            $bySim = $this->loadExistingBySim($pdo, $sourceId, array_values($simIds));
+            // Only the single-store Simcartiha migration may reconcile legacy IDs by SIM.
+            // Marketplaces can have multiple independent sellers for the same number.
+            $sourceSlug = $pdo->prepare('SELECT slug FROM sources WHERE id = ?');
+            $sourceSlug->execute([$sourceId]);
+            $bySim = $sourceSlug->fetchColumn() === 'simcartiha'
+                ? $this->loadExistingBySim($pdo, $sourceId, array_values($simIds)) : [];
 
             $upserted = 0;
             $now = now_dt();
@@ -293,3 +298,4 @@ final class OfferStore
         }
     }
 }
+

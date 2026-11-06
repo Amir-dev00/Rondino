@@ -97,7 +97,7 @@ final class Crawler
     public function progressSnapshot(string $slug): array
     {
         $pdo = Database::pdo();
-        $stmt = $pdo->prepare('SELECT id, slug, name, last_success_at, last_error, last_offers_found FROM sources WHERE slug = ?');
+        $stmt = $pdo->prepare('SELECT id, slug, name, is_enabled, last_success_at, last_error, last_offers_found FROM sources WHERE slug = ?');
         $stmt->execute([$slug]);
         $src = $stmt->fetch() ?: ['slug' => $slug, 'name' => $slug];
         $pstmt = $pdo->prepare('SELECT * FROM crawl_passes WHERE source_id = (SELECT id FROM sources WHERE slug = ? LIMIT 1)');
@@ -106,6 +106,10 @@ final class Crawler
         $adapter = Registry::get($slug);
         $seedCount = $adapter ? count($adapter->seedUrls()) : 0;
 
+        if (empty($src['is_enabled']) || $slug === 'setaresim') {
+            return ['slug'=>$slug, 'name'=>$src['name'] ?? $slug, 'status'=>'disabled', 'status_fa'=>'غیرفعال',
+                'offers_found'=>0, 'last_batch_offers'=>0, 'progress_label'=>'منبع غیرفعال است'];
+        }
         if (!$pass) {
             return [
                 'slug' => $slug,
@@ -138,7 +142,8 @@ final class Crawler
             'running' => 'در حال اجرا',
             'paused' => 'متوقف موقت',
             'completed' => 'کامل',
-            'blocked' => 'مسدود',
+            'blocked' => 'ناموفق',
+            'partial' => 'ناقص',
             default => $status,
         };
 
@@ -165,6 +170,9 @@ final class Crawler
             $dbUnique = (int) $cstmt->fetchColumn();
         }
 
+        $contacts = $pdo->prepare('SELECT COUNT(*) FROM offers o WHERE source_id=? AND EXISTS (SELECT 1 FROM offer_contacts c WHERE c.offer_id=o.id)');
+        $contacts->execute([$sourceId]);
+        $contactOffers = (int) $contacts->fetchColumn();
         return [
             'slug' => $slug,
             'name' => $src['name'] ?? $slug,
@@ -180,7 +188,16 @@ final class Crawler
             'source_total_elements' => isset($state['source_total_elements']) ? (int) $state['source_total_elements'] : null,
             'source_total_pages' => isset($state['source_total_pages']) ? (int) $state['source_total_pages'] : null,
             'coverage_scope' => (string) ($coverage['scope'] ?? ''),
-            'coverage_complete' => !empty($coverage['is_complete_inventory']),
+            'coverage_complete' => $status === 'completed' && !empty($coverage['is_complete_inventory']) && empty($state['inventory_changed_during_crawl']) && $uniqueOffers >= (int) ($state['source_total_elements'] ?? 0),
+            'inventory_path' => !empty($coverage['is_complete_inventory']),
+            'distinct_sims_pass' => count($state['seen_sim_numbers'] ?? []),
+            'source_rows' => (int) ($state['source_records'] ?? 0),
+            'excluded_rows' => (int) ($state['excluded_rows'] ?? 0),
+            'duplicate_rows' => (int) ($state['duplicate_rows'] ?? 0),
+            'total_observed_at_fa' => Jalali::formatDateTime($state['total_observed_at'] ?? null),
+            'inventory_changed' => !empty($state['inventory_changed_during_crawl']),
+            'next_retry_at_fa' => Jalali::formatDateTime(($retryAt = max(array_column($state['branches'] ?? [], 'retry_at') ?: [0])) ? gmdate('Y-m-d H:i:s', (int) $retryAt) : null),
+            'contact_offers' => $contactOffers,
             'coverage_label' => (string) ($coverage['label'] ?? ''),
             'stop_reason' => $state['stop_reason'] ?? null,
             'last_batch_offers' => (int) $pass['last_batch_offers'],
@@ -195,3 +212,4 @@ final class Crawler
         ];
     }
 }
+

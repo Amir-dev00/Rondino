@@ -100,6 +100,7 @@ final class CrawlJob
                 'UPDATE crawl_jobs SET status=?, lock_token=?, locked_until=?, updated_at=?, started_at=COALESCE(started_at, ?) WHERE id=?'
             )->execute(['running', $token, $until, now_dt(), now_dt(), (int) $row['id']]);
             $pdo->commit();
+            $row['resumed'] = $row['status'] === 'running';
             $row['status'] = 'running';
             $row['lock_token'] = $token;
             return $row;
@@ -111,3 +112,4 @@ final class CrawlJob
         }
     }
 }
+

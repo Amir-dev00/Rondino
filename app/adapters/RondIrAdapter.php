@@ -164,6 +164,7 @@ final class RondIrAdapter extends BaseAdapter
         if (!is_array($json)) {
             return null;
         }
+        if (($json['last'] ?? false) === true) return null;
         $content = is_array($json['content'] ?? null) ? $json['content'] : [];
         if ($content === []) {
             return null;
@@ -217,6 +218,11 @@ final class RondIrAdapter extends BaseAdapter
             throw new RuntimeException('rond.ir API JSON missing content[]; not treated as empty inventory.');
         }
 
+        parse_str((string) parse_url($pageUrl, PHP_URL_QUERY), $query);
+        $actualPage = $json['number'] ?? $json['pageable']['pageNumber'] ?? null;
+        if ($actualPage === null || (int) $actualPage !== (int) ($query['page'] ?? 0)) {
+            throw new RuntimeException('API returned a different page than requested');
+        }
         $listings = [];
         $sourceIds = [];
         $excluded = 0;
@@ -257,7 +263,7 @@ final class RondIrAdapter extends BaseAdapter
                 }
             }
 
-            $external = $code !== '' ? $code : $sim;
+            $external = $code !== '' ? $code : ($sim . ':' . (string) ($row['customerId'] ?? 'unknown'));
             $listings[$external] = $this->listing([
                 'external_id' => $external,
                 'sim_number' => $sim,
@@ -273,7 +279,7 @@ final class RondIrAdapter extends BaseAdapter
             ]);
         }
 
-        if ($sourceIds === []) {
+        if ($sourceIds === [] && !($json['last'] ?? false) && (int) ($json['totalElements'] ?? -1) !== 0) {
             throw new RuntimeException('rond.ir API page had zero source records; not treated as completed empty inventory.');
         }
 
@@ -413,8 +419,22 @@ final class RondIrAdapter extends BaseAdapter
     /**
      * @return array{ok:bool,status:int,body:string,error:?string,final_url:string,headers:array<string,string>}
      */
-    private function fetchApiViaBrowser(string $url, int $timeout): array
+    private static array $prefetchedPages = [];
+
+    public function clearPrefetch(): void { self::$prefetchedPages = []; }
+
+    public function fetchDetail(string $url, int $timeout = 25): array
     {
+        return $this->fetchApiViaBrowser($url, $timeout, true);
+    }
+
+    private function fetchApiViaBrowser(string $url, int $timeout, bool $detail = false): array
+    {
+        if (!$detail && isset(self::$prefetchedPages[$url])) {
+            $cached = self::$prefetchedPages[$url];
+            unset(self::$prefetchedPages[$url]);
+            if ($cached['expires'] > time()) return $cached['response'];
+        }
         $root = dirname(__DIR__, 2);
         $script = $root . DIRECTORY_SEPARATOR . 'scripts' . DIRECTORY_SEPARATOR . 'browser-api-fetch.mjs';
         if (!is_file($script)) {
@@ -452,6 +472,7 @@ final class RondIrAdapter extends BaseAdapter
 
         $scriptsDir = $root . DIRECTORY_SEPARATOR . 'scripts';
         $cmd = [$node, $script, $url, $out, $diag];
+        if ($detail) $cmd[] = '--detail';
         $descriptors = [
             0 => ['pipe', 'r'],
             1 => ['pipe', 'w'],
@@ -460,7 +481,7 @@ final class RondIrAdapter extends BaseAdapter
         $proc = @proc_open($cmd, $descriptors, $pipes, $scriptsDir, $env, ['bypass_shell' => true]);
         if (!is_resource($proc)) {
             $cmdLine = escapeshellarg($node) . ' ' . escapeshellarg($script) . ' '
-                . escapeshellarg($url) . ' ' . escapeshellarg($out) . ' ' . escapeshellarg($diag);
+                . escapeshellarg($url) . ' ' . escapeshellarg($out) . ' ' . escapeshellarg($diag) . ($detail ? ' --detail' : '');
             $proc = proc_open($cmdLine, $descriptors, $pipes, $scriptsDir, $env);
         }
         if (!is_resource($proc)) {
@@ -475,7 +496,8 @@ final class RondIrAdapter extends BaseAdapter
         }
 
         fclose($pipes[0]);
-        $deadlineSec = max(100, $timeout + 90);
+        $deadlineSec = 135;
+        // Node requests have their own bounded timeouts; PHP is the final watchdog.
         $drain = $this->drainProcessPipes($proc, $pipes[1], $pipes[2], $deadlineSec);
         $body = is_file($out) ? (string) file_get_contents($out) : '';
         $diagData = is_file($diag) ? json_decode((string) file_get_contents($diag), true) : null;
@@ -496,7 +518,26 @@ final class RondIrAdapter extends BaseAdapter
             ];
         }
 
-        if ($drain['code'] === 0 && $body !== '' && preg_match('/simCardNumber|totalElements/', $body)) {
+        @unlink($diag);
+        if (!$detail && $drain['code'] === 0) {
+            $envelope = json_decode($body, true);
+            foreach (($envelope['pages'] ?? []) as $entry) {
+                $entryUrl = (string) ($entry['url'] ?? '');
+                // URL query serialization may differ; canonicalize to our URL format.
+                parse_str((string) parse_url($entryUrl, PHP_URL_QUERY), $query);
+                $entryUrl = $this->apiPageUrl((int) ($query['page'] ?? 0));
+                self::$prefetchedPages[$entryUrl] = ['expires' => time() + 60, 'response' => [
+                    'ok' => true, 'status' => 200, 'body' => (string) $entry['body'],
+                    'error' => null, 'final_url' => $entryUrl, 'headers' => [],
+                ]];
+            }
+            if (isset(self::$prefetchedPages[$url])) {
+                $response = self::$prefetchedPages[$url]['response'];
+                unset(self::$prefetchedPages[$url]);
+                return $response;
+            }
+        }
+        if ($detail && $drain['code'] === 0 && $body !== '') {
             return [
                 'ok' => true,
                 'status' => 200,
@@ -783,7 +824,7 @@ final class RondIrAdapter extends BaseAdapter
         foreach ([
             'PATH', 'SystemRoot', 'USERPROFILE', 'HOME', 'LOCALAPPDATA', 'TEMP', 'TMP',
             'PATHEXT', 'ComSpec', 'RONDINO_BROWSER_PROXY', 'RONDINO_BROWSER_FALLBACK_PROXY',
-            'RONDINO_BROWSER_DEADLINE_MS', 'RONDINO_BROWSER_GOTO_MS',
+            'RONDINO_BROWSER_DEADLINE_MS', 'RONDINO_BROWSER_GOTO_MS', 'RONDINO_API_BATCH_SIZE',
             'HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy', 'NO_PROXY', 'no_proxy',
         ] as $k) {
             $v = getenv($k);
@@ -848,3 +889,4 @@ final class RondIrAdapter extends BaseAdapter
         return null;
     }
 }
+
